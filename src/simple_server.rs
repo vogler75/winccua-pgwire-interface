@@ -316,6 +316,16 @@ async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<Ses
                 }
             } else {
                 warn!("❓ Unable to parse PostgreSQL message from {}", peer_addr);
+                warn!("🔍 Message details: {} bytes received", n);
+                warn!("📦 Raw message bytes: {:02X?}", &buffer[..n.min(32)]); // Log first 32 bytes max
+                if n > 0 {
+                    warn!("🔤 Message type byte: 0x{:02X} ('{}')", buffer[0], 
+                          if buffer[0].is_ascii_graphic() { buffer[0] as char } else { '?' });
+                }
+                if n >= 5 {
+                    let length = u32::from_be_bytes([buffer[1], buffer[2], buffer[3], buffer[4]]);
+                    warn!("📏 Declared length: {} bytes (actual received: {} bytes)", length, n);
+                }
                 // Send a generic error response with ready-for-query message
                 let mut error_response = create_postgres_error_response("08P01", "Invalid message format");
                 

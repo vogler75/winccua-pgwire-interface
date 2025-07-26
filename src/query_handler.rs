@@ -11,7 +11,19 @@ impl QueryHandler {
         info!("🔍 Executing SQL query: {}", sql.trim());
         
         // Parse the SQL query
-        let query_info = SqlHandler::parse_query(sql)?;
+        let query_info = match SqlHandler::parse_query(sql) {
+            Ok(info) => info,
+            Err(e) => {
+                // Check if this is an unknown table error and log the SQL statement
+                let error_msg = e.to_string();
+                if error_msg.starts_with("Unknown table:") {
+                    warn!("❌ Unknown table in SQL query: {}", sql.trim());
+                    warn!("❌ {}", error_msg);
+                    warn!("📋 Available tables: tagvalues, loggedtagvalues, activealarms, loggedalarms");
+                }
+                return Err(e);
+            }
+        };
         debug!("📋 Parsed query: {:?}", query_info);
         
         // Execute based on table type
