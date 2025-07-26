@@ -63,10 +63,22 @@ impl QueryHandler {
     async fn execute_logged_tag_values_query(query_info: &QueryInfo, session: &AuthenticatedSession) -> Result<String> {
         info!("📈 Executing LoggedTagValues query");
         
-        // Get tag names
-        let tag_names = query_info.get_tag_names();
+        // Get tag names - handle LIKE patterns via browse if needed
+        let tag_names = if query_info.requires_browse() {
+            info!("🔍 LoggedTagValues query contains LIKE patterns, using browse to resolve tag names");
+            Self::resolve_like_patterns(&query_info, session).await?
+        } else {
+            let tag_names = query_info.get_tag_names();
+            if tag_names.is_empty() {
+                return Err(anyhow!("LoggedTagValues queries must specify tag names in WHERE clause"));
+            }
+            debug!("🏷️  Requesting logged tag names: {:?}", tag_names);
+            tag_names
+        };
+        
         if tag_names.is_empty() {
-            return Err(anyhow!("LoggedTagValues queries must specify tag names in WHERE clause"));
+            info!("📭 No tags found matching the LIKE criteria");
+            return Ok(Self::create_csv_header(&query_info.columns));
         }
         
         // Get timestamp range
