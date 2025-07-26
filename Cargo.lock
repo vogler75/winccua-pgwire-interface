@@ -1241,6 +1241,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest",
+ "hmac",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2488,13 +2498,20 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "chrono",
  "clap",
+ "hex",
+ "hmac",
+ "md5",
+ "pbkdf2",
  "pgwire",
+ "rand 0.8.5",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "sqlparser",
  "tokio",
  "tracing",
