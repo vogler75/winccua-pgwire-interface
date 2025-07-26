@@ -45,12 +45,14 @@ enum ScramStage {
 
 pub struct SimpleServer {
     session_manager: Arc<SessionManager>,
+    no_auth_config: Option<(String, String)>, // (username, password) for no-auth mode
 }
 
 impl SimpleServer {
-    pub fn new(graphql_url: String) -> Self {
+    pub fn new(graphql_url: String, no_auth_config: Option<(String, String)>) -> Self {
         Self {
             session_manager: Arc::new(SessionManager::new(graphql_url)),
+            no_auth_config,
         }
     }
 
@@ -65,10 +67,11 @@ impl SimpleServer {
             info!("🌟 Accepted new connection from {}", client_addr);
 
             let session_manager = self.session_manager.clone();
+            let no_auth_config = self.no_auth_config.clone();
             tokio::spawn(async move {
                 debug!("🚀 Starting connection handler for {}", client_addr);
                 
-                if let Err(e) = handle_connection(socket, session_manager).await {
+                if let Err(e) = handle_connection(socket, session_manager, no_auth_config).await {
                     error!("💥 Error handling connection from {}: {}", client_addr, e);
                 } else {
                     debug!("✅ Connection handler completed successfully for {}", client_addr);
@@ -80,7 +83,7 @@ impl SimpleServer {
     }
 }
 
-async fn handle_connection(mut socket: TcpStream, session_manager: Arc<SessionManager>) -> Result<()> {
+async fn handle_connection(mut socket: TcpStream, session_manager: Arc<SessionManager>, no_auth_config: Option<(String, String)>) -> Result<()> {
     let peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
     info!("🔌 New connection established from {}", peer_addr);
     
@@ -130,7 +133,7 @@ async fn handle_connection(mut socket: TcpStream, session_manager: Arc<SessionMa
         trace!("🔍 Startup message bytes: {:02x?}", &startup_buffer[..startup_n]);
         
         // Now handle the startup message as a regular PostgreSQL connection
-        return handle_postgres_startup(socket, session_manager, &startup_buffer[..startup_n]).await;
+        return handle_postgres_startup(socket, session_manager, &startup_buffer[..startup_n], no_auth_config).await;
     }
     
     // Check if this looks like PostgreSQL wire protocol (non-SSL)
@@ -138,7 +141,7 @@ async fn handle_connection(mut socket: TcpStream, session_manager: Arc<SessionMa
         warn!("🐘 PostgreSQL wire protocol detected from {}!", peer_addr);
         
         // For now, attempt to handle it as PostgreSQL startup
-        return handle_postgres_startup(socket, session_manager, &peek_buffer[..n]).await;
+        return handle_postgres_startup(socket, session_manager, &peek_buffer[..n], no_auth_config).await;
     }
     
     // Try to interpret as simple text protocol
@@ -148,7 +151,7 @@ async fn handle_connection(mut socket: TcpStream, session_manager: Arc<SessionMa
     // Check if this looks like an authentication attempt
     if initial_data.contains(':') {
         info!("🔐 Processing authentication attempt from {}", peer_addr);
-        return handle_simple_text_protocol(socket, session_manager, initial_data.to_string()).await;
+        return handle_simple_text_protocol(socket, session_manager, initial_data.to_string(), no_auth_config).await;
     }
     
     // If we can't identify the protocol, read more data
@@ -169,7 +172,7 @@ async fn handle_connection(mut socket: TcpStream, session_manager: Arc<SessionMa
                         debug!("📄 Full data as text: {:?}", full_data);
                         
                         if full_data.contains(':') {
-                            return handle_simple_text_protocol(socket, session_manager, full_data.to_string()).await;
+                            return handle_simple_text_protocol(socket, session_manager, full_data.to_string(), no_auth_config).await;
                         }
                     }
                 }
@@ -222,7 +225,7 @@ fn is_ssl_request(data: &[u8]) -> bool {
     version == 80877103 && length == 8
 }
 
-async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<SessionManager>, data: &[u8]) -> Result<()> {
+async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<SessionManager>, data: &[u8], no_auth_config: Option<(String, String)>) -> Result<()> {
     let peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
     info!("🐘 Handling PostgreSQL startup from {}", peer_addr);
     
@@ -316,6 +319,75 @@ async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<Ses
         
         info!("🔐 PostgreSQL client {} requesting authentication for user: {}", peer_addr, username);
         
+        // Check if no-auth mode is enabled
+        if let Some((no_auth_username, no_auth_password)) = &no_auth_config {
+            info!("🔓 No-auth mode: bypassing PostgreSQL authentication for client {}", peer_addr);
+            info!("🔓 Using configured credentials: username='{}' for GraphQL authentication", no_auth_username);
+            
+            // Skip PostgreSQL authentication and directly authenticate with GraphQL
+            let authenticated_session = match session_manager.authenticate(no_auth_username, no_auth_password).await {
+                Ok(session) => {
+                    info!("✅ No-auth GraphQL authentication successful for configured user '{}' from {}", no_auth_username, peer_addr);
+                    
+                    // Send authentication OK response immediately
+                    let auth_ok_response = create_postgres_auth_ok_response();
+                    debug!("📤 Sending authentication OK to {} (no-auth mode)", peer_addr);
+                    if let Err(e) = socket.write_all(&auth_ok_response).await {
+                        error!("❌ Failed to send auth OK to {}: {}", peer_addr, e);
+                        return Ok(());
+                    }
+                    
+                    session
+                }
+                Err(e) => {
+                    error!("❌ No-auth GraphQL authentication failed for user '{}' from {}: {}", no_auth_username, peer_addr, e);
+                    let error_response = create_postgres_error_response("28P01", &format!("GraphQL authentication failed: {}", e));
+                    socket.write_all(&error_response).await?;
+                    return Ok(());
+                }
+            };
+            
+            // Skip to query processing loop
+            info!("🔄 Starting PostgreSQL query loop for {} (no-auth mode)", peer_addr);
+            let mut buffer = [0; 4096];
+            
+            loop {
+                debug!("📖 Waiting for PostgreSQL query from {}", peer_addr);
+                
+                let n = socket.read(&mut buffer).await?;
+                if n == 0 {
+                    info!("🔌 PostgreSQL connection closed by client {}", peer_addr);
+                    break;
+                }
+                
+                debug!("📊 Received {} bytes from PostgreSQL client {}", n, peer_addr);
+                
+                // Handle PostgreSQL messages (both Simple and Extended Query Protocol)
+                match handle_postgres_message(&buffer[..n], &mut connection_state, &authenticated_session).await {
+                    Ok(response) => {
+                        if !response.is_empty() {
+                            debug!("📤 Sending PostgreSQL response to {} ({} bytes)", peer_addr, response.len());
+                            socket.write_all(&response).await?;
+                        }
+                    }
+                    Err(e) => {
+                        error!("❌ Message processing error for {}: {}", peer_addr, e);
+                        let mut error_response = create_postgres_error_response("42000", &format!("Query failed: {}", e));
+                        
+                        // Add ready-for-query message after error to prevent client hang
+                        error_response.push(b'Z');
+                        error_response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
+                        error_response.push(b'I'); // Status: 'I' = idle
+                        
+                        socket.write_all(&error_response).await?;
+                    }
+                }
+            }
+            
+            return Ok(());
+        }
+        
+        // Normal authentication flow
         // Choose authentication method:
         // 1. Use MD5 by default for maximum compatibility (psycopg2, etc.)
         // 2. SCRAM-SHA-256 available but not default due to limited client support
@@ -733,7 +805,7 @@ fn create_postgres_error_response(code: &str, message: &str) -> Vec<u8> {
     response
 }
 
-async fn handle_simple_text_protocol(mut socket: TcpStream, session_manager: Arc<SessionManager>, initial_data: String) -> Result<()> {
+async fn handle_simple_text_protocol(mut socket: TcpStream, session_manager: Arc<SessionManager>, initial_data: String, _no_auth_config: Option<(String, String)>) -> Result<()> {
     let peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
     info!("📝 Using simple text protocol with {}", peer_addr);
     
@@ -1155,21 +1227,33 @@ fn is_transaction_control_statement(query: &str) -> bool {
 fn is_utility_statement(query: &str) -> bool {
     // Common utility statements that PostgreSQL clients send
     let utility_patterns = [
-        // Session configuration
+        // Session configuration - very common with Grafana
         "SET ",
         "RESET ",
         "SHOW ",
         
-        // Client compatibility
+        // Client compatibility queries - Grafana sends these frequently
         "SELECT VERSION()",
         "SELECT CURRENT_DATABASE()",
         "SELECT CURRENT_USER",
         "SELECT CURRENT_SCHEMA",
         "SELECT SESSION_USER",
+        "SELECT CURRENT_SETTING(",
+        "SELECT PG_BACKEND_PID()",
+        "SELECT PG_IS_IN_RECOVERY()",
         
-        // Information schema queries (common with BI tools)
+        // Information schema queries (common with BI tools like Grafana)
         "SELECT * FROM INFORMATION_SCHEMA",
         "SELECT * FROM PG_",
+        "SELECT SCHEMANAME FROM PG_",
+        "SELECT TABLENAME FROM PG_",
+        "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA",
+        
+        // Grafana-specific queries for database introspection
+        "SELECT N.NSPNAME",
+        "SELECT C.RELNAME",
+        "SELECT A.ATTNAME",
+        "SELECT T.TYPNAME",
         
         // DISCARD statements
         "DISCARD ALL",
@@ -1177,7 +1261,7 @@ fn is_utility_statement(query: &str) -> bool {
         "DISCARD SEQUENCES", 
         "DISCARD TEMPORARY",
         
-        // Listen/Notify (not supported)
+        // Listen/Notify (not supported but should not error)
         "LISTEN ",
         "UNLISTEN ",
         "NOTIFY ",
@@ -1196,6 +1280,15 @@ fn is_utility_statement(query: &str) -> bool {
         "DROP ROLE",
         "GRANT ",
         "REVOKE ",
+        
+        // Common compatibility checks
+        "SELECT 1",
+        "SELECT TRUE",
+        "SELECT FALSE",
+        
+        // Timezone and encoding queries
+        "SELECT * FROM PG_TIMEZONE_",
+        "SELECT * FROM PG_ENCODING_",
     ];
     
     for pattern in &utility_patterns {
@@ -1670,6 +1763,13 @@ fn create_postgres_auth_ok_response() -> Vec<u8> {
     response.extend_from_slice(&8u32.to_be_bytes()); // Length: 4 (length) + 4 (auth type) = 8
     response.extend_from_slice(&0u32.to_be_bytes()); // Auth type 0 = OK
     
+    // BackendKeyData message - CRITICAL for Grafana compatibility
+    // Message type 'K' + length (4 bytes) + process_id (4 bytes) + secret_key (4 bytes)
+    response.push(b'K');
+    response.extend_from_slice(&12u32.to_be_bytes()); // Length: 4 + 4 + 4 = 12
+    response.extend_from_slice(&12345u32.to_be_bytes()); // Dummy process ID
+    response.extend_from_slice(&67890u32.to_be_bytes()); // Dummy secret key
+    
     // Parameter status messages for required parameters
     let params = [
         ("server_version", "14.0"),
@@ -1680,6 +1780,8 @@ fn create_postgres_auth_ok_response() -> Vec<u8> {
         ("session_authorization", "operator"),
         ("DateStyle", "ISO"),
         ("TimeZone", "UTC"),
+        ("standard_conforming_strings", "on"),
+        ("integer_datetimes", "on"),
     ];
     
     for (name, value) in params {
