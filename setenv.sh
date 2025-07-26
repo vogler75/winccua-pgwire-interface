@@ -1,0 +1,2 @@
+export GRAPHQL_HTTP_URL=http://DESKTOP-KHLB071:4000/graphql
+
