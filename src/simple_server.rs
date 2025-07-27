@@ -225,6 +225,28 @@ fn is_ssl_request(data: &[u8]) -> bool {
     version == 80877103 && length == 8
 }
 
+async fn read_complete_postgres_message(socket: &mut TcpStream, initial_data: &[u8]) -> Result<Vec<u8>> {
+    if initial_data.len() < 4 {
+        return Err(anyhow::anyhow!("Not enough data for message length"));
+    }
+    
+    let expected_length = u32::from_be_bytes([initial_data[0], initial_data[1], initial_data[2], initial_data[3]]) as usize;
+    let mut complete_message = Vec::with_capacity(expected_length);
+    complete_message.extend_from_slice(initial_data);
+    
+    // Read remaining bytes if needed
+    while complete_message.len() < expected_length {
+        let mut buffer = vec![0; expected_length - complete_message.len()];
+        let n = socket.read(&mut buffer).await?;
+        if n == 0 {
+            return Err(anyhow::anyhow!("Connection closed while reading message"));
+        }
+        complete_message.extend_from_slice(&buffer[..n]);
+    }
+    
+    Ok(complete_message)
+}
+
 async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<SessionManager>, data: &[u8], no_auth_config: Option<(String, String)>) -> Result<()> {
     let peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
     info!("🐘 Handling PostgreSQL startup from {}", peer_addr);
@@ -234,23 +256,32 @@ async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<Ses
         return Ok(());
     }
     
-    let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-    let version = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    // Ensure we have the complete message
+    let complete_data = match read_complete_postgres_message(&mut socket, data).await {
+        Ok(data) => data,
+        Err(e) => {
+            error!("❌ Failed to read complete startup message from {}: {}", peer_addr, e);
+            return Ok(());
+        }
+    };
+    
+    let length = u32::from_be_bytes([complete_data[0], complete_data[1], complete_data[2], complete_data[3]]);
+    let version = u32::from_be_bytes([complete_data[4], complete_data[5], complete_data[6], complete_data[7]]);
     
     info!("📋 Startup message: length={}, version={} (0x{:08x})", length, version, version);
     
     // Dump full startup message for debugging
     info!("🔍 Full startup message dump from {}:", peer_addr);
-    info!("   📏 Total length: {} bytes", data.len());
+    info!("   📏 Total length: {} bytes", complete_data.len());
     info!("   📊 Message length field: {} bytes", length);
     info!("   🔢 Protocol version: {} (0x{:08x})", version, version);
     
     // Hex dump of the entire startup message
-    let hex_dump = hex::encode(data);
+    let hex_dump = hex::encode(&complete_data);
     info!("   🔍 Hex dump (full message): {}", hex_dump);
     
     // ASCII interpretation (printable characters only)
-    let ascii_dump: String = data.iter()
+    let ascii_dump: String = complete_data.iter()
         .map(|&b| if b >= 32 && b <= 126 { b as char } else { '.' })
         .collect();
     info!("   📝 ASCII dump: {}", ascii_dump);
@@ -267,8 +298,8 @@ async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<Ses
         debug!("✅ PostgreSQL 3.0 protocol detected");
         
         // Extract parameters (user, database, etc.)
-        if data.len() > 8 {
-            let params_data = &data[8..];
+        if complete_data.len() > 8 {
+            let params_data = &complete_data[8..];
             let params = parse_startup_parameters(params_data);
             info!("📋 Client connection parameters from {}:", peer_addr);
             for (key, value) in &params {
@@ -294,8 +325,8 @@ async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<Ses
         }
         
         // Extract username from startup parameters for authentication
-        let username = if data.len() > 8 {
-            let params_data = &data[8..];
+        let username = if complete_data.len() > 8 {
+            let params_data = &complete_data[8..];
             let params = parse_startup_parameters(params_data);
             debug!("🔍 All startup parameters: {:?}", params);
             
