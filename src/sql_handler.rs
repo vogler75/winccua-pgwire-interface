@@ -879,4 +879,75 @@ mod tests {
             }
         }
     }
+    
+    #[test]
+    fn test_taglist_display_name_filtering() {
+        // Test that TagList queries with display_name filters parse correctly
+        let test_cases = [
+            ("SELECT * FROM taglist WHERE display_name = 'Motor Control'", FilterOperator::Equal),
+            ("SELECT * FROM taglist WHERE display_name LIKE '%Motor%'", FilterOperator::Like),
+            ("SELECT * FROM taglist WHERE display_name != 'Unknown'", FilterOperator::NotEqual),
+            ("SELECT tag_name, display_name FROM taglist WHERE display_name LIKE '%PV%' AND tag_name LIKE '%valve%'", FilterOperator::Like),
+        ];
+        
+        for (sql, expected_operator) in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse TagList query with display_name filter: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::Query(query_info) => {
+                    assert!(matches!(query_info.table, VirtualTable::TagList), "Should identify as TagList table");
+                    
+                    // Check that display_name filter is present
+                    let display_name_filter = query_info.filters.iter()
+                        .find(|f| f.column == "display_name");
+                    assert!(display_name_filter.is_some(), "Should have display_name filter for query: {}", sql);
+                    
+                    if let Some(filter) = display_name_filter {
+                        match expected_operator {
+                            FilterOperator::Equal => assert!(matches!(filter.operator, FilterOperator::Equal)),
+                            FilterOperator::Like => assert!(matches!(filter.operator, FilterOperator::Like)),
+                            FilterOperator::NotEqual => assert!(matches!(filter.operator, FilterOperator::NotEqual)),
+                            _ => panic!("Unexpected operator in test: {:?}", expected_operator),
+                        }
+                        println!("✅ TagList display_name filter parsed: '{}' -> {:?}", sql, filter.operator);
+                    }
+                }
+                SqlResult::SetStatement(_) => {
+                    panic!("TagList query incorrectly identified as SET statement: {}", sql);
+                }
+            }
+        }
+    }
+    
+    #[test]
+    fn test_taglist_data_type_filtering() {
+        // Test that TagList queries with data_type filters also work (bonus feature)
+        let test_cases = [
+            "SELECT * FROM taglist WHERE data_type = 'Float'",
+            "SELECT * FROM taglist WHERE data_type LIKE '%Int%'",
+            "SELECT tag_name FROM taglist WHERE data_type = 'String' AND display_name LIKE '%name%'",
+        ];
+        
+        for sql in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse TagList query with data_type filter: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::Query(query_info) => {
+                    assert!(matches!(query_info.table, VirtualTable::TagList), "Should identify as TagList table");
+                    
+                    // Check that data_type filter is present
+                    let data_type_filter = query_info.filters.iter()
+                        .find(|f| f.column == "data_type");
+                    assert!(data_type_filter.is_some(), "Should have data_type filter for query: {}", sql);
+                    
+                    println!("✅ TagList data_type filter parsed: '{}'", sql);
+                }
+                SqlResult::SetStatement(_) => {
+                    panic!("TagList query incorrectly identified as SET statement: {}", sql);
+                }
+            }
+        }
+    }
 }

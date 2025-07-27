@@ -383,6 +383,50 @@ impl QueryHandler {
         Ok(filtered)
     }
     
+    fn apply_browse_filters(results: Vec<crate::graphql::types::BrowseResult>, filters: &[ColumnFilter]) -> Result<Vec<crate::graphql::types::BrowseResult>> {
+        let mut filtered = Vec::new();
+        
+        for result in results {
+            let mut include = true;
+            
+            // Check if this result passes all filters
+            for filter in filters {
+                match filter.column.as_str() {
+                    "tag_name" | "object_type" => {
+                        // These filters are already applied in the GraphQL query
+                        continue;
+                    }
+                    "display_name" => {
+                        // Post-process filtering for display_name (not supported by GraphQL)
+                        let display_name = result.display_name.as_deref().unwrap_or("");
+                        if !Self::check_string_filter(display_name, &filter.operator, &filter.value) {
+                            include = false;
+                            break;
+                        }
+                    }
+                    "data_type" => {
+                        // Post-process filtering for data_type
+                        let data_type = result.data_type.as_deref().unwrap_or("");
+                        if !Self::check_string_filter(data_type, &filter.operator, &filter.value) {
+                            include = false;
+                            break;
+                        }
+                    }
+                    _ => {
+                        // Unknown filter column, skip
+                        continue;
+                    }
+                }
+            }
+            
+            if include {
+                filtered.push(result);
+            }
+        }
+        
+        Ok(filtered)
+    }
+    
     fn apply_logged_filters(results: Vec<crate::graphql::types::LoggedTagValue>, filters: &[ColumnFilter]) -> Result<Vec<crate::graphql::types::LoggedTagValue>> {
         // Similar to apply_filters but for logged tag values
         let mut filtered = Vec::new();
@@ -935,7 +979,11 @@ impl QueryHandler {
         
         debug!("✅ GraphQL browse returned {} results", browse_results.len());
         
-        Self::format_tag_list_response(browse_results, query_info)
+        // Apply post-processing filters (for columns not supported by GraphQL)
+        let filtered_results = Self::apply_browse_filters(browse_results, &query_info.filters)?;
+        debug!("✂️  After post-processing filters: {} results", filtered_results.len());
+        
+        Self::format_tag_list_response(filtered_results, query_info)
     }
 
 
