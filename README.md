@@ -10,6 +10,7 @@ A PostgreSQL wire protocol server that acts as a proxy to a WinCC UA GraphQL bac
   - `LoggedTagValues` - Historical tag data with timestamp filtering
   - `ActiveAlarms` - Current active alarms  
   - `LoggedAlarms` - Historical alarm data
+  - `TagList` - List of available tags (uses GraphQL browse query)
 - **SQL Support**: SELECT queries with WHERE clauses, filtering, and LIKE patterns with wildcards
 - **GraphQL Integration**: Translates SQL queries to GraphQL calls
 
@@ -142,6 +143,16 @@ CREATE TABLE loggedalarms (
 );
 ```
 
+### TagList
+```sql
+CREATE TABLE tag_list (
+    tag_name TEXT,
+    display_name TEXT,
+    object_type TEXT,
+    data_type TEXT
+);
+```
+
 ## Example Queries
 
 ```sql
@@ -166,6 +177,12 @@ SELECT * FROM loggedtagvalues WHERE tag_name LIKE 'HMI_Tag_%:%';
 SELECT name, priority, event_text, raise_time 
 FROM activealarms 
 WHERE priority >= 10;
+
+-- List all available tags (uses GraphQL browse query)
+SELECT * FROM tag_list;
+
+-- Filter tags by pattern
+SELECT * FROM tag_list WHERE tag_name LIKE 'HMI_%';
 ```
 
 ## LIKE Pattern Support

@@ -4,6 +4,7 @@ use sqlparser::ast::{BinaryOperator, Expr, OrderByExpr, Query, Select, SelectIte
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use tracing::{debug, warn};
+use chrono::Local;
 
 pub struct SqlHandler;
 
@@ -294,6 +295,42 @@ impl SqlHandler {
                 }
                 _ => Err(anyhow!("Unsupported value type: {:?}", value)),
             },
+            Expr::Identifier(ident) => {
+                // Handle special date/time identifiers
+                match ident.value.to_uppercase().as_str() {
+                    "CURRENT_DATE" => {
+                        let today = Local::now().format("%Y-%m-%d").to_string();
+                        Ok(FilterValue::Timestamp(today))
+                    }
+                    "CURRENT_TIME" => {
+                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+                        Ok(FilterValue::Timestamp(now))
+                    }
+                    "CURRENT_TIMESTAMP" => {
+                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+                        Ok(FilterValue::Timestamp(now))
+                    }
+                    _ => Err(anyhow!("Unknown identifier: {}", ident.value)),
+                }
+            }
+            Expr::Function(func) => {
+                // Handle function calls like CURRENT_DATE()
+                match func.name.to_string().to_uppercase().as_str() {
+                    "CURRENT_DATE" => {
+                        let today = Local::now().format("%Y-%m-%d").to_string();
+                        Ok(FilterValue::Timestamp(today))
+                    }
+                    "CURRENT_TIME" => {
+                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+                        Ok(FilterValue::Timestamp(now))
+                    }
+                    "CURRENT_TIMESTAMP" | "NOW" => {
+                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+                        Ok(FilterValue::Timestamp(now))
+                    }
+                    _ => Err(anyhow!("Unsupported function: {}", func.name)),
+                }
+            }
             _ => Err(anyhow!("Complex value expressions are not supported")),
         }
     }
@@ -320,6 +357,42 @@ impl SqlHandler {
                 }
                 _ => Err(anyhow!("Unsupported value type: {:?}", value)),
             },
+            Expr::Identifier(ident) => {
+                // Handle special date/time identifiers
+                match ident.value.to_uppercase().as_str() {
+                    "CURRENT_DATE" => {
+                        let today = Local::now().format("%Y-%m-%d").to_string();
+                        Ok(FilterValue::Timestamp(today))
+                    }
+                    "CURRENT_TIME" => {
+                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+                        Ok(FilterValue::Timestamp(now))
+                    }
+                    "CURRENT_TIMESTAMP" => {
+                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+                        Ok(FilterValue::Timestamp(now))
+                    }
+                    _ => Err(anyhow!("Unknown identifier: {}", ident.value)),
+                }
+            }
+            Expr::Function(func) => {
+                // Handle function calls like CURRENT_DATE()
+                match func.name.to_string().to_uppercase().as_str() {
+                    "CURRENT_DATE" => {
+                        let today = Local::now().format("%Y-%m-%d").to_string();
+                        Ok(FilterValue::Timestamp(today))
+                    }
+                    "CURRENT_TIME" => {
+                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+                        Ok(FilterValue::Timestamp(now))
+                    }
+                    "CURRENT_TIMESTAMP" | "NOW" => {
+                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+                        Ok(FilterValue::Timestamp(now))
+                    }
+                    _ => Err(anyhow!("Unsupported function: {}", func.name)),
+                }
+            }
             _ => Err(anyhow!("Complex value expressions are not supported")),
         }
     }

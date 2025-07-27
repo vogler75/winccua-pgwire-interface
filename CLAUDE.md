@@ -54,6 +54,7 @@ The server exposes these virtual tables that map to GraphQL queries:
 2. **LoggedTagValues** - Historical tag data (`loggedTagValues` GraphQL query)  
 3. **ActiveAlarms** - Current alarms (`activeAlarms` GraphQL query)
 4. **LoggedAlarms** - Historical alarms (`loggedAlarms` GraphQL query)
+5. **TagList** - List of available tags (`browse` GraphQL query)
 
 ## Testing
 

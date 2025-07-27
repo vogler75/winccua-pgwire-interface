@@ -96,7 +96,15 @@ impl QueryHandler {
         }
         
         // Get timestamp range
-        let (start_time, end_time) = query_info.get_timestamp_filter().unwrap_or((None, None));
+        let (start_time, mut end_time) = query_info.get_timestamp_filter().unwrap_or((None, None));
+        
+        // If endtime is not specified, use current UTC time
+        if end_time.is_none() {
+            let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+            debug!("📅 No endtime specified, using current UTC time: {}", now);
+            end_time = Some(now);
+        }
+        
         debug!("⏰ Time range: {:?} to {:?}", start_time, end_time);
         
         // Get limit
@@ -192,7 +200,15 @@ impl QueryHandler {
         info!("📚 Executing LoggedAlarms query");
         
         // Get timestamp range
-        let (start_time, end_time) = query_info.get_timestamp_filter().unwrap_or((None, None));
+        let (start_time, mut end_time) = query_info.get_timestamp_filter().unwrap_or((None, None));
+        
+        // If endtime is not specified, use current UTC time
+        if end_time.is_none() {
+            let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+            debug!("📅 No endtime specified, using current UTC time: {}", now);
+            end_time = Some(now);
+        }
+        
         debug!("⏰ Time range: {:?} to {:?}", start_time, end_time);
         
         // Extract filter string
