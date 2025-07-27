@@ -29,7 +29,7 @@ impl SqlHandler {
         match &*query.body {
             SetExpr::Select(select) => {
                 let table = Self::extract_table(select)?;
-                let columns = Self::extract_columns(select, &table)?;
+                let (columns, column_mappings) = Self::extract_columns(select, &table)?;
                 let filters = Self::extract_filters(select, &table)?;
                 let limit = query.limit.as_ref().and_then(|l| Self::extract_limit(l));
                 let order_by = query.order_by.as_ref().and_then(|order_by| {
@@ -43,6 +43,7 @@ impl SqlHandler {
                 let query_info = QueryInfo {
                     table,
                     columns,
+                    column_mappings,
                     filters,
                     limit,
                     order_by,
@@ -74,8 +75,9 @@ impl SqlHandler {
             .ok_or_else(|| anyhow!("Unknown table: {}", table_name))
     }
 
-    fn extract_columns(select: &Select, table: &VirtualTable) -> Result<Vec<String>> {
+    fn extract_columns(select: &Select, table: &VirtualTable) -> Result<(Vec<String>, std::collections::HashMap<String, String>)> {
         let mut columns = Vec::new();
+        let mut column_mappings = std::collections::HashMap::new();
 
         for item in &select.projection {
             match item {
@@ -95,7 +97,9 @@ impl SqlHandler {
                         if !table.has_column(&column_name) {
                             return Err(anyhow!("Unknown column: {}", column_name));
                         }
-                        columns.push(alias.value.clone());
+                        let alias_name = alias.value.clone();
+                        columns.push(alias_name.clone());
+                        column_mappings.insert(alias_name, column_name);
                     } else {
                         return Err(anyhow!("Complex expressions in SELECT are not supported"));
                     }
@@ -108,7 +112,7 @@ impl SqlHandler {
             columns.extend(table.get_column_names().iter().map(|s| s.to_string()));
         }
 
-        Ok(columns)
+        Ok((columns, column_mappings))
     }
 
     fn extract_filters(select: &Select, table: &VirtualTable) -> Result<Vec<ColumnFilter>> {

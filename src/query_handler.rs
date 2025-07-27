@@ -57,7 +57,7 @@ impl QueryHandler {
         
         if final_tag_names.is_empty() {
             info!("📭 No tags found matching the criteria");
-            return Ok(Self::create_csv_header(&query_info.columns));
+            return Ok(Self::create_csv_header_with_types(&query_info));
         }
         
         debug!("🎯 Final tag names to query: {:?}", final_tag_names);
@@ -91,7 +91,7 @@ impl QueryHandler {
         
         if tag_names.is_empty() {
             info!("📭 No tags found matching the LIKE criteria");
-            return Ok(Self::create_csv_header(&query_info.columns));
+            return Ok(Self::create_csv_header_with_types(&query_info));
         }
         
         // Get timestamp range
@@ -585,16 +585,19 @@ impl QueryHandler {
     }
 
     fn convert_timestamp_to_postgres_format(timestamp_str: &str) -> String {
-        // Try to parse the timestamp string and convert to PostgreSQL format
+        // Try to parse the timestamp string and convert to PostgreSQL TIMESTAMPTZ format
+        // PostgreSQL expects: YYYY-MM-DD HH:MM:SS.ssssss+TZ
+        // We normalize all timestamps to UTC (+00 timezone)
+        
         // First try parsing as ISO 8601 format (most common)
         if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp_str) {
-            // Convert to UTC and format for PostgreSQL
-            return dt.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S%.6f%z").to_string();
+            // Convert to UTC and format for PostgreSQL TIMESTAMPTZ text format
+            return dt.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S%.6f+00").to_string();
         }
         
         // Try parsing without timezone (assume UTC)
         if let Ok(dt) = timestamp_str.parse::<DateTime<Utc>>() {
-            return dt.format("%Y-%m-%d %H:%M:%S%.6f%z").to_string();
+            return dt.format("%Y-%m-%d %H:%M:%S%.6f+00").to_string();
         }
         
         // If parsing fails, try some common formats
@@ -607,7 +610,7 @@ impl QueryHandler {
             "%Y-%m-%dT%H:%M:%S%z"
         ] {
             if let Ok(dt) = DateTime::parse_from_str(timestamp_str, format) {
-                return dt.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S%.6f%z").to_string();
+                return dt.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S%.6f+00").to_string();
             }
         }
         
@@ -616,12 +619,25 @@ impl QueryHandler {
         timestamp_str.to_string()
     }
 
-    fn create_csv_header(columns: &[String]) -> String {
-        format!("{}\n", columns.join(","))
+    fn create_csv_header_with_types(query_info: &QueryInfo) -> String {
+        // Create header with type information that the formatter can use
+        // Format: column1:type1,column2:type2,etc
+        let header_with_types: Vec<String> = query_info.columns.iter().map(|column| {
+            // Resolve alias to original column name to get the correct type
+            let original_column = query_info.column_mappings.get(column).unwrap_or(column);
+            let type_info = match original_column.as_str() {
+                "numeric_value" | "timestamp_ms" => "NUMERIC",
+                "timestamp" => "TIMESTAMPTZ", 
+                _ => "TEXT",
+            };
+            format!("{}:{}", column, type_info)
+        }).collect();
+        
+        format!("{}\n", header_with_types.join(","))
     }
     
     fn format_tag_values_response(results: Vec<crate::graphql::types::TagValueResult>, query_info: &QueryInfo) -> Result<String> {
-        let mut response = String::from(&Self::create_csv_header(&query_info.columns));
+        let mut response = String::from(&Self::create_csv_header_with_types(query_info));
         let mut row_count = 0;
         
         for result in results {
@@ -641,7 +657,9 @@ impl QueryHandler {
                 let mut row_values = Vec::new();
                 
                 for column in &query_info.columns {
-                    let cell_value = match column.as_str() {
+                    // Check if this column is an alias, if so get the original column name
+                    let original_column = query_info.column_mappings.get(column).unwrap_or(column);
+                    let cell_value = match original_column.as_str() {
                         "tag_name" => result.name.clone(),
                         "timestamp" => Self::convert_timestamp_to_postgres_format(&value.timestamp),
                         "timestamp_ms" => Self::convert_timestamp_to_ms_epoch(&value.timestamp),
@@ -682,7 +700,7 @@ impl QueryHandler {
     }
     
     fn format_logged_tag_values_response(results: Vec<crate::graphql::types::LoggedTagValue>, query_info: &QueryInfo) -> Result<String> {
-        let mut response = String::from(&Self::create_csv_header(&query_info.columns));
+        let mut response = String::from(&Self::create_csv_header_with_types(query_info));
         let mut row_count = 0;
         
         // Sort results if ORDER BY is specified
@@ -708,7 +726,9 @@ impl QueryHandler {
             let mut row_values = Vec::new();
             
             for column in &query_info.columns {
-                let cell_value = match column.as_str() {
+                // Check if this column is an alias, if so get the original column name
+                let original_column = query_info.column_mappings.get(column).unwrap_or(column);
+                let cell_value = match original_column.as_str() {
                     "tag_name" => result.tag_name.clone(),
                     "timestamp" => Self::convert_timestamp_to_postgres_format(&result.timestamp),
                     "timestamp_ms" => Self::convert_timestamp_to_ms_epoch(&result.timestamp),
@@ -748,14 +768,16 @@ impl QueryHandler {
     }
     
     fn format_active_alarms_response(results: Vec<crate::graphql::types::ActiveAlarm>, query_info: &QueryInfo) -> Result<String> {
-        let mut response = String::from(&Self::create_csv_header(&query_info.columns));
+        let mut response = String::from(&Self::create_csv_header_with_types(query_info));
         let mut row_count = 0;
         
         for result in results {
             let mut row_values = Vec::new();
             
             for column in &query_info.columns {
-                let cell_value = match column.as_str() {
+                // Check if this column is an alias, if so get the original column name
+                let original_column = query_info.column_mappings.get(column).unwrap_or(column);
+                let cell_value = match original_column.as_str() {
                     "name" => result.name.clone(),
                     "instance_id" => result.instance_id.to_string(),
                     "alarm_group_id" => result.alarm_group_id.map(|v| v.to_string()).unwrap_or_else(|| "NULL".to_string()),
@@ -794,14 +816,16 @@ impl QueryHandler {
     }
     
     fn format_logged_alarms_response(results: Vec<crate::graphql::types::LoggedAlarm>, query_info: &QueryInfo) -> Result<String> {
-        let mut response = String::from(&Self::create_csv_header(&query_info.columns));
+        let mut response = String::from(&Self::create_csv_header_with_types(query_info));
         let mut row_count = 0;
         
         for result in results {
             let mut row_values = Vec::new();
             
             for column in &query_info.columns {
-                let cell_value = match column.as_str() {
+                // Check if this column is an alias, if so get the original column name
+                let original_column = query_info.column_mappings.get(column).unwrap_or(column);
+                let cell_value = match original_column.as_str() {
                     "name" => result.name.clone(),
                     "instance_id" => result.instance_id.to_string(),
                     "alarm_group_id" => result.alarm_group_id.map(|v| v.to_string()).unwrap_or_else(|| "NULL".to_string()),

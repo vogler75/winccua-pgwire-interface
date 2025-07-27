@@ -157,6 +157,7 @@ impl FilterValue {
 pub struct QueryInfo {
     pub table: VirtualTable,
     pub columns: Vec<String>,
+    pub column_mappings: std::collections::HashMap<String, String>, // alias -> original_column
     pub filters: Vec<ColumnFilter>,
     pub limit: Option<i64>,
     pub order_by: Option<OrderBy>,

@@ -1947,26 +1947,53 @@ fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
         return response;
     }
     
-    // Parse CSV header
+    // Parse CSV header with potential type information
     let headers: Vec<&str> = lines[0].split(',').collect();
+    let mut column_types: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
+    let mut clean_headers: Vec<String> = Vec::new();
+    
+    for header in &headers {
+        if header.contains(':') {
+            // Header format: "column:TYPE"
+            let parts: Vec<&str> = header.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                clean_headers.push(parts[0].to_string());
+                column_types.insert(parts[0].to_string(), parts[1]);
+            } else {
+                clean_headers.push(header.to_string());
+            }
+        } else {
+            clean_headers.push(header.to_string());
+        }
+    }
     let row_count = lines.len() - 1; // Exclude header
     
     // Row description message: 'T' + length + field count + field descriptions
     response.push(b'T');
     let mut row_desc = Vec::new();
-    row_desc.extend_from_slice(&(headers.len() as i16).to_be_bytes()); // Field count
+    row_desc.extend_from_slice(&(clean_headers.len() as i16).to_be_bytes()); // Field count
     
-    for header in &headers {
+    for header in &clean_headers {
         row_desc.extend_from_slice(header.as_bytes());
         row_desc.push(0); // Null terminator for field name
         row_desc.extend_from_slice(&0u32.to_be_bytes()); // Table OID
         row_desc.extend_from_slice(&0i16.to_be_bytes());  // Column attribute number
         
-        // Use appropriate type OID based on column name
-        let type_oid = match header.trim() {
-            "numeric_value" | "timestamp_ms" => 1700u32, // NUMERIC type
-            "timestamp" => 1184u32,     // TIMESTAMPTZ type
-            _ => 25u32,                 // TEXT type (default)
+        // Use appropriate type OID based on type information or column name
+        let type_oid = if let Some(type_info) = column_types.get(header) {
+            match *type_info {
+                "NUMERIC" => 1700u32,      // NUMERIC type
+                "TIMESTAMPTZ" => 1184u32,  // TIMESTAMPTZ type
+                "TEXT" => 25u32,           // TEXT type
+                _ => 25u32,                // TEXT type (default)
+            }
+        } else {
+            // Fallback to column name matching for backwards compatibility
+            match header.trim() {
+                "numeric_value" | "timestamp_ms" => 1700u32, // NUMERIC type
+                "timestamp" => 1184u32,     // TIMESTAMPTZ type
+                _ => 25u32,                 // TEXT type (default)
+            }
         };
         row_desc.extend_from_slice(&type_oid.to_be_bytes()); // Type OID
         
