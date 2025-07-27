@@ -1,7 +1,7 @@
 use super::types::*;
 use anyhow::{anyhow, Result};
 use reqwest::Client;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug)]
 pub struct GraphQLClient {
@@ -488,6 +488,9 @@ impl GraphQLClient {
         };
 
         debug!("Browsing tags");
+        debug!("GraphQL query: {}", query);
+        debug!("GraphQL variables: nameFilters={:?}, objectTypeFilters={:?}", 
+               request.variables.name_filters, request.variables.object_type_filters);
 
         let response = self
             .client
@@ -498,7 +501,12 @@ impl GraphQLClient {
             .await?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("GraphQL request failed with status: {}", response.status()));
+            let status = response.status();
+            let response_text = response.text().await.unwrap_or_else(|_| "Failed to read response".to_string());
+            error!("GraphQL browse_tags request failed with status: {}", status);
+            error!("GraphQL request body: {}", serde_json::to_string_pretty(&request).unwrap_or_else(|_| "Failed to serialize request".to_string()));
+            error!("GraphQL response body: {}", response_text);
+            return Err(anyhow!("GraphQL request failed with status: {}", status));
         }
 
         let browse_response: BrowseResponse = response.json().await?;
@@ -518,7 +526,8 @@ impl GraphQLClient {
     }
 
     pub async fn browse_logging_tags(&self, token: &str, name_filters: Vec<String>) -> Result<Vec<BrowseResult>> {
-        let query = r#"
+        // Try first with objectTypeFilters (newer API)
+        let query_with_filters = r#"
             query Browse($nameFilters: [String!]!, $objectTypeFilters: [String!]!) {
                 browse(nameFilters: $nameFilters, objectTypeFilters: $objectTypeFilters) {
                     name
@@ -529,10 +538,10 @@ impl GraphQLClient {
             }
         "#;
 
-        let request = BrowseRequest {
-            query: query.to_string(),
+        let request_with_filters = BrowseRequest {
+            query: query_with_filters.to_string(),
             variables: BrowseVariables {
-                name_filters,
+                name_filters: name_filters.clone(),
                 object_type_filters: vec!["LOGGINGTAG".to_string()],
                 base_type_filters: vec![],
                 language: "en-US".to_string(),
@@ -540,33 +549,55 @@ impl GraphQLClient {
         };
 
         debug!("Browsing logging tags with objectTypeFilters=LOGGINGTAG");
+        debug!("GraphQL query: {}", query_with_filters);
+        debug!("GraphQL variables: nameFilters={:?}, objectTypeFilters={:?}", 
+               request_with_filters.variables.name_filters, request_with_filters.variables.object_type_filters);
 
         let response = self
             .client
             .post(&self.url)
             .header("Authorization", format!("Bearer {}", token))
-            .json(&request)
+            .json(&request_with_filters)
             .send()
             .await?;
 
-        if !response.status().is_success() {
-            return Err(anyhow!("GraphQL request failed with status: {}", response.status()));
+        if response.status().is_success() {
+            let browse_response: BrowseResponse = response.json().await?;
+
+            if let Some(errors) = browse_response.errors {
+                let error_msg = errors.iter()
+                    .map(|e| e.description.as_deref().unwrap_or("Unknown error"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                warn!("Browse logging tags query errors (trying fallback): {}", error_msg);
+            } else {
+                // Success with objectTypeFilters
+                return Ok(browse_response
+                    .data
+                    .map(|d| d.browse)
+                    .unwrap_or_default());
+            }
+        } else {
+            let status = response.status();
+            let response_text = response.text().await.unwrap_or_else(|_| "Failed to read response".to_string());
+            warn!("GraphQL browse_logging_tags with objectTypeFilters failed with status: {}, trying fallback", status);
+            debug!("GraphQL request body: {}", serde_json::to_string_pretty(&request_with_filters).unwrap_or_else(|_| "Failed to serialize request".to_string()));
+            debug!("GraphQL response body: {}", response_text);
         }
 
-        let browse_response: BrowseResponse = response.json().await?;
-
-        if let Some(errors) = browse_response.errors {
-            let error_msg = errors.iter()
-                .map(|e| e.description.as_deref().unwrap_or("Unknown error"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            error!("Browse logging tags query errors: {}", error_msg);
-        }
-
-        Ok(browse_response
-            .data
-            .map(|d| d.browse)
-            .unwrap_or_default())
+        // Fallback: use regular browse and filter client-side
+        warn!("Falling back to regular browse and client-side filtering for LOGGINGTAG");
+        let all_results = self.browse_tags(token, name_filters).await?;
+        let total_count = all_results.len();
+        
+        // Filter results to only include LOGGINGTAG objectType
+        let filtered_results: Vec<BrowseResult> = all_results
+            .into_iter()
+            .filter(|result| result.object_type.as_deref() == Some("LOGGINGTAG"))
+            .collect();
+            
+        debug!("Filtered {} results to {} LOGGINGTAG results", total_count, filtered_results.len());
+        Ok(filtered_results)
     }
 }
 
