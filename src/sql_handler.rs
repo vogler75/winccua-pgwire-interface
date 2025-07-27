@@ -89,6 +89,9 @@ impl SqlHandler {
                     if !table.has_column(&column_name) {
                         return Err(anyhow!("Unknown column: {}", column_name));
                     }
+                    if !table.is_selectable_column(&column_name) {
+                        return Err(anyhow!("Column '{}' cannot be selected (virtual column)", column_name));
+                    }
                     columns.push(column_name);
                 }
                 SelectItem::ExprWithAlias { expr, alias } => {
@@ -96,6 +99,9 @@ impl SqlHandler {
                         let column_name = ident.value.clone();
                         if !table.has_column(&column_name) {
                             return Err(anyhow!("Unknown column: {}", column_name));
+                        }
+                        if !table.is_selectable_column(&column_name) {
+                            return Err(anyhow!("Column '{}' cannot be selected (virtual column)", column_name));
                         }
                         let alias_name = alias.value.clone();
                         columns.push(alias_name.clone());
@@ -259,8 +265,8 @@ impl SqlHandler {
         match expr {
             Expr::Value(value) => match value {
                 Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => {
-                    // For tag_name columns, always treat as string
-                    if column == "tag_name" || column == "name" {
+                    // For string columns (tag_name, object_type, data_type, display_name), always treat as string
+                    if column == "tag_name" || column == "name" || column == "object_type" || column == "data_type" || column == "display_name" {
                         Ok(FilterValue::String(s.clone()))
                     }
                     // For timestamp columns, always treat as timestamp

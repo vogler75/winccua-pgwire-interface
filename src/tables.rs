@@ -6,6 +6,7 @@ pub enum VirtualTable {
     LoggedTagValues,
     ActiveAlarms,
     LoggedAlarms,
+    TagList,
 }
 
 impl VirtualTable {
@@ -15,6 +16,7 @@ impl VirtualTable {
             "loggedtagvalues" => Some(Self::LoggedTagValues),
             "activealarms" => Some(Self::ActiveAlarms),
             "loggedalarms" => Some(Self::LoggedAlarms),
+            "taglist" => Some(Self::TagList),
             _ => None,
         }
     }
@@ -74,6 +76,12 @@ impl VirtualTable {
                 ("user_name", Type::TEXT),
                 ("duration", Type::TEXT),
             ],
+            Self::TagList => vec![
+                ("tag_name", Type::TEXT),
+                ("display_name", Type::TEXT),
+                ("object_type", Type::TEXT),
+                ("data_type", Type::TEXT),
+            ],
         }
     }
 
@@ -87,7 +95,18 @@ impl VirtualTable {
     }
 
     pub fn has_column(&self, column: &str) -> bool {
-        self.get_column_names().contains(&column)
+        self.get_column_names().contains(&column) || self.is_virtual_column(column)
+    }
+
+    pub fn is_virtual_column(&self, column: &str) -> bool {
+        match self {
+            Self::TagList => column == "language",
+            _ => false,
+        }
+    }
+
+    pub fn is_selectable_column(&self, column: &str) -> bool {
+        self.get_column_names().contains(&column) && !self.is_virtual_column(column)
     }
 }
 
@@ -266,5 +285,61 @@ impl QueryInfo {
                 }
             })
             .collect()
+    }
+
+    pub fn get_name_filters(&self) -> Vec<String> {
+        for filter in &self.filters {
+            if filter.column == "tag_name" {
+                match &filter.operator {
+                    FilterOperator::Equal => {
+                        if let Some(name) = filter.value.as_string() {
+                            return vec![name.to_string()];
+                        }
+                    }
+                    FilterOperator::In => {
+                        if let Some(names) = filter.value.as_list() {
+                            return names.clone();
+                        }
+                    }
+                    FilterOperator::Like => {
+                        if let Some(pattern) = filter.value.as_string() {
+                            return vec![pattern.to_string()];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        vec!["*".to_string()] // Default wildcard
+    }
+
+    pub fn get_object_type_filters(&self) -> Vec<String> {
+        for filter in &self.filters {
+            if filter.column == "object_type" {
+                match &filter.operator {
+                    FilterOperator::Equal => {
+                        if let Some(object_type) = filter.value.as_string() {
+                            return vec![object_type.to_string()];
+                        }
+                    }
+                    FilterOperator::In => {
+                        if let Some(object_types) = filter.value.as_list() {
+                            return object_types.clone();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        vec![]
+    }
+
+    pub fn get_language_filter(&self) -> Option<String> {
+        for filter in &self.filters {
+            if filter.column == "language" && matches!(filter.operator, FilterOperator::Equal) {
+                return filter.value.as_string().map(|s| s.to_string());
+            }
+        }
+        None
     }
 }

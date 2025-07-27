@@ -20,7 +20,7 @@ impl QueryHandler {
                 if error_msg.starts_with("Unknown table:") {
                     warn!("❌ Unknown table in SQL query: {}", sql.trim());
                     warn!("❌ {}", error_msg);
-                    warn!("📋 Available tables: tagvalues, loggedtagvalues, activealarms, loggedalarms");
+                    warn!("📋 Available tables: tagvalues, loggedtagvalues, activealarms, loggedalarms, taglist");
                 }
                 return Err(e);
             }
@@ -33,6 +33,7 @@ impl QueryHandler {
             VirtualTable::LoggedTagValues => Self::execute_logged_tag_values_query(&query_info, session).await,
             VirtualTable::ActiveAlarms => Self::execute_active_alarms_query(&query_info, session).await,
             VirtualTable::LoggedAlarms => Self::execute_logged_alarms_query(&query_info, session).await,
+            VirtualTable::TagList => Self::execute_tag_list_query(&query_info, session).await,
         }
     }
     
@@ -283,8 +284,8 @@ impl QueryHandler {
             let suffix = sql_pattern.trim_start_matches('%');
             format!("*{}", suffix)
         } else if sql_pattern.contains('%') || sql_pattern.contains('_') {
-            // Complex patterns: convert % to * and _ to ? for GraphQL
-            sql_pattern.replace('%', "*").replace('_', "?")
+            // Complex patterns: convert % to * for GraphQL
+            sql_pattern.replace('%', "*")
         } else {
             // No wildcards: exact match or try as prefix pattern
             format!("{}*", sql_pattern)
@@ -540,10 +541,9 @@ impl QueryHandler {
     }
     
     fn matches_like_pattern(value: &str, pattern: &str) -> bool {
-        // Simple LIKE pattern matching (% = any characters, _ = single character)
+        // Simple LIKE pattern matching (% = any characters)
         let regex_pattern = pattern
-            .replace('%', ".*")
-            .replace('_', ".");
+            .replace('%', ".*");
         
         if let Ok(regex) = regex::Regex::new(&format!("^{}$", regex_pattern)) {
             regex.is_match(value)
@@ -868,6 +868,96 @@ impl QueryHandler {
         }
         
         info!("📊 Formatted {} rows for LoggedAlarms query", row_count);
+        Ok(response)
+    }
+
+    async fn execute_tag_list_query(query_info: &QueryInfo, session: &AuthenticatedSession) -> Result<String> {
+        info!("📋 Executing TagList query");
+        
+        // Debug: Show all filters
+        debug!("🔍 All filters in query: {:?}", query_info.filters);
+        
+        // Get name filters from WHERE clause and convert SQL wildcards to GraphQL format
+        let raw_name_filters = query_info.get_name_filters();
+        let name_filters: Vec<String> = raw_name_filters.iter()
+            .map(|filter| filter.replace('%', "*"))
+            .collect();
+        debug!("🔍 Raw name filters: {:?}", raw_name_filters);
+        debug!("🔍 Converted name filters: {:?}", name_filters);
+        
+        // Get object type filters from WHERE clause
+        let object_type_filters = query_info.get_object_type_filters();
+        debug!("🔍 Object type filters: {:?}", object_type_filters);
+        
+        // Get language filter (virtual column)
+        let language = query_info.get_language_filter().unwrap_or_else(|| "en-US".to_string());
+        debug!("🌐 Language filter: {}", language);
+        
+        // Call GraphQL browse with filters
+        let browse_results = if object_type_filters.is_empty() {
+            // Standard browse call
+            session.client.browse_tags(&session.token, name_filters).await?
+        } else {
+            // Extended browse call with object type filters
+            session.client.browse_tags_with_object_type(
+                &session.token,
+                name_filters,
+                object_type_filters,
+                language
+            ).await?
+        };
+        
+        debug!("✅ GraphQL browse returned {} results", browse_results.len());
+        
+        Self::format_tag_list_response(browse_results, query_info)
+    }
+
+
+    fn format_tag_list_response(results: Vec<crate::graphql::types::BrowseResult>, query_info: &QueryInfo) -> Result<String> {
+        let mut response = String::new();
+        
+        // Build header based on selected columns
+        let headers: Vec<String> = query_info.columns.iter()
+            .filter(|col| query_info.table.is_selectable_column(col))
+            .map(|col| {
+                query_info.column_mappings.get(col)
+                    .unwrap_or(col)
+                    .clone()
+            })
+            .collect();
+        
+        if headers.is_empty() {
+            return Err(anyhow!("No selectable columns specified for TagList query"));
+        }
+        
+        response.push_str(&format!("{}\n", headers.join("\t")));
+        
+        let mut row_count = 0;
+        for result in results {
+            let values: Vec<String> = headers.iter()
+                .map(|header| {
+                    match header.as_str() {
+                        "tag_name" => result.name.clone(),
+                        "display_name" => result.display_name.as_deref().unwrap_or("NULL").to_string(),
+                        "object_type" => result.object_type.as_deref().unwrap_or("NULL").to_string(),
+                        "data_type" => result.data_type.as_deref().unwrap_or("NULL").to_string(),
+                        _ => "NULL".to_string(),
+                    }
+                })
+                .collect();
+            
+            response.push_str(&format!("{}\n", values.join("\t")));
+            row_count += 1;
+            
+            // Apply limit if specified
+            if let Some(limit) = query_info.limit {
+                if row_count >= limit {
+                    break;
+                }
+            }
+        }
+        
+        info!("📊 Formatted {} rows for TagList query", row_count);
         Ok(response)
     }
 }
