@@ -246,7 +246,7 @@ fn parse_csv_to_pgwire_response(csv_data: String) -> PgWireResult<Response<'stat
                 "tag_name" | "string_value" | "name" | "state" | "event_text" | "info_text" 
                 | "origin" | "area" | "host_name" | "user_name" | "duration" => Type::TEXT,
                 "timestamp" | "raise_time" | "acknowledgment_time" | "clear_time" 
-                | "reset_time" | "modification_time" => Type::TIMESTAMPTZ,
+                | "reset_time" | "modification_time" => Type::TIMESTAMP,
                 "numeric_value" | "timestamp_ms" => Type::NUMERIC,
                 "instance_id" | "alarm_group_id" | "priority" => Type::INT4,
                 "value" => Type::TEXT, // Could be numeric or text

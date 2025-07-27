@@ -585,27 +585,27 @@ impl QueryHandler {
     }
 
     fn convert_timestamp_to_postgres_format(timestamp_str: &str) -> String {
-        // GraphQL returns UTC timestamps - preserve them without timezone conversion
-        // Only ensure they're in PostgreSQL-compatible format
+        // GraphQL returns UTC timestamps - format as TIMESTAMP (without timezone)
+        // PostgreSQL TIMESTAMP format: YYYY-MM-DD HH:MM:SS.ssssss (no timezone)
         
-        // If it's already in PostgreSQL format (YYYY-MM-DD HH:MM:SS), keep it as-is
-        if timestamp_str.matches('-').count() == 2 && timestamp_str.contains(' ') && timestamp_str.contains(':') {
+        // If it's already in PostgreSQL TIMESTAMP format, keep it as-is
+        if timestamp_str.matches('-').count() == 2 && timestamp_str.contains(' ') && timestamp_str.contains(':') && !timestamp_str.contains('+') && !timestamp_str.contains('Z') {
             return timestamp_str.to_string();
         }
         
-        // Try to parse and reformat only to ensure PostgreSQL compatibility
+        // Try to parse and reformat to TIMESTAMP (without timezone)
         // First try parsing as ISO 8601 format (most common from GraphQL)
         if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp_str) {
-            // Keep original timezone information, just format for PostgreSQL
-            return dt.format("%Y-%m-%d %H:%M:%S%.6f%z").to_string();
+            // Format as TIMESTAMP without timezone information
+            return dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string();
         }
         
         // Try parsing without timezone (assume it's already UTC)
         if let Ok(dt) = timestamp_str.parse::<DateTime<Utc>>() {
-            return dt.format("%Y-%m-%d %H:%M:%S%.6f+00").to_string();
+            return dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string();
         }
         
-        // Try common formats without forced UTC conversion
+        // Try common formats and convert to TIMESTAMP format
         for format in &[
             "%Y-%m-%dT%H:%M:%S%.fZ",
             "%Y-%m-%dT%H:%M:%SZ", 
@@ -615,8 +615,8 @@ impl QueryHandler {
             "%Y-%m-%dT%H:%M:%S%z"
         ] {
             if let Ok(dt) = DateTime::parse_from_str(timestamp_str, format) {
-                // Keep original timezone, don't convert to UTC
-                return dt.format("%Y-%m-%d %H:%M:%S%.6f%z").to_string();
+                // Format as TIMESTAMP without timezone
+                return dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string();
             }
         }
         
@@ -633,7 +633,8 @@ impl QueryHandler {
             let original_column = query_info.column_mappings.get(column).unwrap_or(column);
             let type_info = match original_column.as_str() {
                 "numeric_value" | "timestamp_ms" => "NUMERIC",
-                "timestamp" => "TIMESTAMPTZ", 
+                "timestamp" | "raise_time" | "acknowledgment_time" | "clear_time" 
+                | "reset_time" | "modification_time" => "TIMESTAMP", 
                 _ => "TEXT",
             };
             format!("{}:{}", column, type_info)

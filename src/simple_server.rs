@@ -1983,7 +1983,8 @@ fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
         let type_oid = if let Some(type_info) = column_types.get(header) {
             match *type_info {
                 "NUMERIC" => 1700u32,      // NUMERIC type
-                "TIMESTAMPTZ" => 1184u32,  // TIMESTAMPTZ type
+                "TIMESTAMP" => 1114u32,    // TIMESTAMP type (without timezone)
+                "TIMESTAMPTZ" => 1184u32,  // TIMESTAMPTZ type (for backwards compatibility)
                 "TEXT" => 25u32,           // TEXT type
                 _ => 25u32,                // TEXT type (default)
             }
@@ -1991,7 +1992,8 @@ fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
             // Fallback to column name matching for backwards compatibility
             match header.trim() {
                 "numeric_value" | "timestamp_ms" => 1700u32, // NUMERIC type
-                "timestamp" => 1184u32,     // TIMESTAMPTZ type
+                "timestamp" | "raise_time" | "acknowledgment_time" | "clear_time" 
+                | "reset_time" | "modification_time" => 1114u32, // TIMESTAMP type
                 _ => 25u32,                 // TEXT type (default)
             }
         };
