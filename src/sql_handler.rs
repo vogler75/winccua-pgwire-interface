@@ -852,4 +852,31 @@ mod tests {
         println!("   Total response length: {} bytes", response.len());
         println!("   CommandComplete at: 0, ReadyForQuery at: {}", z_pos);
     }
+    
+    #[test]
+    fn test_taglist_query_parsing() {
+        // Test that TagList queries parse correctly
+        let test_cases = [
+            "SELECT tag_name, display_name, object_type, data_type FROM taglist",
+            "SELECT tag_name, data_type FROM taglist WHERE tag_name LIKE '%PV%'",
+            "SELECT DISTINCT object_type FROM taglist",
+            "SELECT tag_name AS name, display_name AS description FROM taglist LIMIT 10",
+        ];
+        
+        for sql in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse TagList query: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::Query(query_info) => {
+                    assert!(matches!(query_info.table, VirtualTable::TagList), "Should identify as TagList table");
+                    assert!(!query_info.columns.is_empty(), "Should have columns specified");
+                    println!("✅ TagList query parsed: '{}' -> {} columns", sql, query_info.columns.len());
+                }
+                SqlResult::SetStatement(_) => {
+                    panic!("TagList query incorrectly identified as SET statement: {}", sql);
+                }
+            }
+        }
+    }
 }

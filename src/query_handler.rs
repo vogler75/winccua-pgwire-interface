@@ -940,30 +940,17 @@ impl QueryHandler {
 
 
     fn format_tag_list_response(results: Vec<crate::graphql::types::BrowseResult>, query_info: &QueryInfo) -> Result<String> {
-        let mut response = String::new();
-        
-        // Build header based on selected columns
-        let headers: Vec<String> = query_info.columns.iter()
-            .filter(|col| query_info.table.is_selectable_column(col))
-            .map(|col| {
-                query_info.column_mappings.get(col)
-                    .unwrap_or(col)
-                    .clone()
-            })
-            .collect();
-        
-        if headers.is_empty() {
-            return Err(anyhow!("No selectable columns specified for TagList query"));
-        }
-        
-        response.push_str(&format!("{}\n", headers.join("\t")));
+        // Use the same CSV format as TagValues for proper column separation
+        let mut response = String::from(&Self::create_csv_header_with_types(query_info));
         
         // Collect all rows first
         let mut rows: Vec<Vec<String>> = results.iter()
             .map(|result| {
-                headers.iter()
-                    .map(|header| {
-                        match header.as_str() {
+                query_info.columns.iter()
+                    .map(|column| {
+                        // Check if this column is an alias, if so get the original column name
+                        let original_column = query_info.column_mappings.get(column).unwrap_or(column);
+                        match original_column.as_str() {
                             "tag_name" => result.name.clone(),
                             "display_name" => result.display_name.as_deref().unwrap_or("NULL").to_string(),
                             "object_type" => result.object_type.as_deref().unwrap_or("NULL").to_string(),
@@ -985,7 +972,7 @@ impl QueryHandler {
         // Apply limit and output rows
         let mut row_count = 0;
         for row in rows {
-            response.push_str(&format!("{}\n", row.join("\t")));
+            response.push_str(&format!("{}\n", row.join(",")));
             row_count += 1;
             
             // Apply limit if specified
