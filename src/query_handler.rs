@@ -932,21 +932,34 @@ impl QueryHandler {
         
         response.push_str(&format!("{}\n", headers.join("\t")));
         
+        // Collect all rows first
+        let mut rows: Vec<Vec<String>> = results.iter()
+            .map(|result| {
+                headers.iter()
+                    .map(|header| {
+                        match header.as_str() {
+                            "tag_name" => result.name.clone(),
+                            "display_name" => result.display_name.as_deref().unwrap_or("NULL").to_string(),
+                            "object_type" => result.object_type.as_deref().unwrap_or("NULL").to_string(),
+                            "data_type" => result.data_type.as_deref().unwrap_or("NULL").to_string(),
+                            _ => "NULL".to_string(),
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        
+        // Apply DISTINCT if specified
+        if query_info.distinct {
+            rows.sort();
+            rows.dedup();
+            debug!("🔄 Applied DISTINCT: {} unique rows after deduplication", rows.len());
+        }
+        
+        // Apply limit and output rows
         let mut row_count = 0;
-        for result in results {
-            let values: Vec<String> = headers.iter()
-                .map(|header| {
-                    match header.as_str() {
-                        "tag_name" => result.name.clone(),
-                        "display_name" => result.display_name.as_deref().unwrap_or("NULL").to_string(),
-                        "object_type" => result.object_type.as_deref().unwrap_or("NULL").to_string(),
-                        "data_type" => result.data_type.as_deref().unwrap_or("NULL").to_string(),
-                        _ => "NULL".to_string(),
-                    }
-                })
-                .collect();
-            
-            response.push_str(&format!("{}\n", values.join("\t")));
+        for row in rows {
+            response.push_str(&format!("{}\n", row.join("\t")));
             row_count += 1;
             
             // Apply limit if specified
@@ -957,7 +970,7 @@ impl QueryHandler {
             }
         }
         
-        info!("📊 Formatted {} rows for TagList query", row_count);
+        info!("📊 Formatted {} rows for TagList query{}", row_count, if query_info.distinct { " (with DISTINCT)" } else { "" });
         Ok(response)
     }
 }

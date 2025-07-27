@@ -180,6 +180,7 @@ pub struct QueryInfo {
     pub filters: Vec<ColumnFilter>,
     pub limit: Option<i64>,
     pub order_by: Option<OrderBy>,
+    pub distinct: bool,
 }
 
 #[derive(Debug, Clone)]

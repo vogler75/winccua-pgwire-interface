@@ -40,6 +40,8 @@ impl SqlHandler {
                     }
                 });
 
+                let distinct = select.distinct.is_some();
+                
                 let query_info = QueryInfo {
                     table,
                     columns,
@@ -47,6 +49,7 @@ impl SqlHandler {
                     filters,
                     limit,
                     order_by,
+                    distinct,
                 };
 
                 Self::validate_query(&query_info)?;
