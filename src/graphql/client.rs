@@ -516,6 +516,58 @@ impl GraphQLClient {
             .map(|d| d.browse)
             .unwrap_or_default())
     }
+
+    pub async fn browse_logging_tags(&self, token: &str, name_filters: Vec<String>) -> Result<Vec<BrowseResult>> {
+        let query = r#"
+            query Browse($nameFilters: [String!]!, $objectTypeFilters: [String!]!) {
+                browse(nameFilters: $nameFilters, objectTypeFilters: $objectTypeFilters) {
+                    name
+                    displayName
+                    objectType
+                    dataType
+                }
+            }
+        "#;
+
+        let request = BrowseRequest {
+            query: query.to_string(),
+            variables: BrowseVariables {
+                name_filters,
+                object_type_filters: vec!["LOGGINGTAG".to_string()],
+                base_type_filters: vec![],
+                language: "en-US".to_string(),
+            },
+        };
+
+        debug!("Browsing logging tags with objectTypeFilters=LOGGINGTAG");
+
+        let response = self
+            .client
+            .post(&self.url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("GraphQL request failed with status: {}", response.status()));
+        }
+
+        let browse_response: BrowseResponse = response.json().await?;
+
+        if let Some(errors) = browse_response.errors {
+            let error_msg = errors.iter()
+                .map(|e| e.description.as_deref().unwrap_or("Unknown error"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            error!("Browse logging tags query errors: {}", error_msg);
+        }
+
+        Ok(browse_response
+            .data
+            .map(|d| d.browse)
+            .unwrap_or_default())
+    }
 }
 
 pub async fn validate_connection(url: &str) -> Result<()> {

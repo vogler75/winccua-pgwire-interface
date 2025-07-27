@@ -230,8 +230,17 @@ impl QueryHandler {
             let browse_pattern = Self::convert_like_to_browse_pattern(&pattern);
             debug!("🌐 Converted to browse pattern: '{}' -> '{}'", pattern, browse_pattern);
             
-            // Call GraphQL browse
-            let browse_results = session.client.browse_tags(&session.token, vec![browse_pattern.clone()]).await?;
+            // Call appropriate GraphQL browse function based on table type
+            let browse_results = match query_info.table {
+                crate::tables::VirtualTable::LoggedTagValues => {
+                    debug!("🗂️  Using browse_logging_tags for LoggedTagValues with objectTypeFilters=LOGGINGTAG");
+                    session.client.browse_logging_tags(&session.token, vec![browse_pattern.clone()]).await?
+                },
+                _ => {
+                    debug!("🗂️  Using standard browse_tags for non-LoggedTagValues table");
+                    session.client.browse_tags(&session.token, vec![browse_pattern.clone()]).await?
+                }
+            };
             debug!("📋 Browse returned {} tags for pattern '{}'", browse_results.len(), browse_pattern);
             
             // Extract just the names from BrowseResult

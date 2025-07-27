@@ -375,6 +375,10 @@ async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<Ses
                         if e.to_string() == "TERMINATE_CONNECTION" {
                             info!("👋 Client {} requested connection termination (no-auth mode)", peer_addr);
                             break; // Exit the query loop gracefully
+                        } else if e.to_string() == "INCOMPLETE_MESSAGE" {
+                            // Incomplete message is normal, just continue waiting for more data
+                            debug!("📨 Incomplete message from {}, waiting for more data", peer_addr);
+                            continue;
                         } else {
                             error!("❌ Message processing error for {}: {}", peer_addr, e);
                             let mut error_response = create_postgres_error_response("42000", &format!("Query failed: {}", e));
@@ -706,6 +710,10 @@ async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<Ses
                     if e.to_string() == "TERMINATE_CONNECTION" {
                         info!("👋 Client {} requested connection termination", peer_addr);
                         break; // Exit the query loop gracefully
+                    } else if e.to_string() == "INCOMPLETE_MESSAGE" {
+                        // Incomplete message is normal, just continue waiting for more data
+                        debug!("📨 Incomplete message from {}, waiting for more data", peer_addr);
+                        continue;
                     } else {
                         error!("❌ Message processing error for {}: {}", peer_addr, e);
                         let mut error_response = create_postgres_error_response("42000", &format!("Query failed: {}", e));
@@ -901,7 +909,8 @@ async fn handle_postgres_message(
     let length = u32::from_be_bytes([data[1], data[2], data[3], data[4]]) as usize;
     
     if data.len() < length + 1 {
-        return Err(anyhow::anyhow!("Incomplete message"));
+        // Incomplete message - this is normal and not an error, just return early
+        return Err(anyhow::anyhow!("INCOMPLETE_MESSAGE"));
     }
     
     let payload = &data[5..5 + length - 4];
@@ -1206,7 +1215,7 @@ async fn handle_simple_query(query: &str, session: &crate::auth::AuthenticatedSe
     // Handle empty queries (just whitespace and/or semicolons)
     let cleaned_query = query.trim().trim_end_matches(';').trim();
     if cleaned_query.is_empty() {
-        info!("⚪ Empty query received, returning empty result");
+        info!("⚪ Empty query received, returning empty query response");
         return Ok(create_empty_query_response());
     }
     
@@ -1220,7 +1229,29 @@ async fn handle_simple_query(query: &str, session: &crate::auth::AuthenticatedSe
     
     // Handle other utility statements
     if is_utility_statement(&trimmed_query) {
-        info!("🔧 Utility statement (acknowledged): {}", query.trim());
+        info!("🔧 Utility statement: {}", query.trim());
+        
+        // Handle SELECT statements with actual data (CSV format: header line, then data lines)
+        // Remove trailing semicolons for comparison
+        let query_without_semicolon = trimmed_query.trim_end_matches(';').trim();
+        if query_without_semicolon == "SELECT 1" {
+            info!("🔍 Returning data for SELECT 1");
+            return Ok("?column?\n1".to_string());
+        } else if query_without_semicolon == "SELECT TRUE" {
+            info!("🔍 Returning data for SELECT TRUE");
+            return Ok("?column?\nt".to_string());
+        } else if query_without_semicolon == "SELECT FALSE" {
+            info!("🔍 Returning data for SELECT FALSE");
+            return Ok("?column?\nf".to_string());
+        } else if query_without_semicolon == "SELECT VERSION()" {
+            info!("🔍 Returning data for SELECT VERSION()");
+            return Ok("version\nWinCC Unified PostgreSQL Interface 1.0".to_string());
+        } else if query_without_semicolon == "SELECT CURRENT_DATABASE()" {
+            info!("🔍 Returning data for SELECT CURRENT_DATABASE()");
+            return Ok("current_database\nsystem".to_string());
+        }
+        
+        // For other utility statements, just acknowledge
         return Ok(create_command_complete_response_text(&get_utility_command_tag(&trimmed_query)));
     }
     
@@ -1384,9 +1415,8 @@ fn create_command_complete_response_text(command_tag: &str) -> String {
 }
 
 fn create_empty_query_response() -> String {
-    // Return an empty CSV result that will be formatted as an empty PostgreSQL result
-    // This will create a response with no rows
-    String::new()
+    // Return a special marker for empty query that will be handled in the response formatting
+    "EMPTY_QUERY_RESPONSE".to_string()
 }
 
 #[allow(dead_code)]
@@ -1898,25 +1928,16 @@ fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
     }
     
     // Handle empty query response
-    if csv_data.trim().is_empty() {
-        // For empty queries, return empty result set with command complete
-        // Empty row description message: 'T' + length + field count (0)
-        response.push(b'T');
-        response.extend_from_slice(&6u32.to_be_bytes()); // Length: 4 + 2 = 6
-        response.extend_from_slice(&0u16.to_be_bytes()); // 0 fields
-        
-        // Command complete message: 'C' + length + tag
-        response.push(b'C');
-        let tag = b"SELECT 0";
-        let tag_length = 4 + tag.len() + 1; // 4 bytes for length + tag + null terminator
-        response.extend_from_slice(&(tag_length as u32).to_be_bytes());
-        response.extend_from_slice(tag);
-        response.push(0); // Null terminator
+    if csv_data.trim() == "EMPTY_QUERY_RESPONSE" {
+        // For empty queries, send EmptyQueryResponse followed by ReadyForQuery
+        // EmptyQueryResponse message: 'I' + length (4 bytes only)
+        response.push(b'I');
+        response.extend_from_slice(&4u32.to_be_bytes()); // Length: 4 bytes (just the length field)
         
         // Ready for query message: 'Z' + length + status
         response.push(b'Z');
         response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
-        response.push(b'I'); // Status: 'I' = idle
+        response.push(b'I'); // Status: 'I' = idle (not in transaction)
         
         return response;
     }
@@ -1991,12 +2012,6 @@ fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
     response.push(b'I'); // Status: 'I' = idle
     
     response
-}
-
-async fn handle_terminate_message() -> Result<Vec<u8>> {
-    info!("🔚 Terminate: Client requested graceful connection termination");
-    // Return a special marker that signals the connection should be closed
-    Err(anyhow::anyhow!("TERMINATE_CONNECTION"))
 }
 
 // Helper functions for Extended Query Protocol
