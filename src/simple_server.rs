@@ -371,15 +371,21 @@ async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<Ses
                         }
                     }
                     Err(e) => {
-                        error!("❌ Message processing error for {}: {}", peer_addr, e);
-                        let mut error_response = create_postgres_error_response("42000", &format!("Query failed: {}", e));
-                        
-                        // Add ready-for-query message after error to prevent client hang
-                        error_response.push(b'Z');
-                        error_response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
-                        error_response.push(b'I'); // Status: 'I' = idle
-                        
-                        socket.write_all(&error_response).await?;
+                        // Check if this is a terminate request
+                        if e.to_string() == "TERMINATE_CONNECTION" {
+                            info!("👋 Client {} requested connection termination (no-auth mode)", peer_addr);
+                            break; // Exit the query loop gracefully
+                        } else {
+                            error!("❌ Message processing error for {}: {}", peer_addr, e);
+                            let mut error_response = create_postgres_error_response("42000", &format!("Query failed: {}", e));
+                            
+                            // Add ready-for-query message after error to prevent client hang
+                            error_response.push(b'Z');
+                            error_response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
+                            error_response.push(b'I'); // Status: 'I' = idle
+                            
+                            socket.write_all(&error_response).await?;
+                        }
                     }
                 }
             }
@@ -696,15 +702,21 @@ async fn handle_postgres_startup(mut socket: TcpStream, session_manager: Arc<Ses
                     }
                 }
                 Err(e) => {
-                    error!("❌ Message processing error for {}: {}", peer_addr, e);
-                    let mut error_response = create_postgres_error_response("42000", &format!("Query failed: {}", e));
-                    
-                    // Add ready-for-query message after error to prevent client hang
-                    error_response.push(b'Z');
-                    error_response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
-                    error_response.push(b'I'); // Status: 'I' = idle
-                    
-                    socket.write_all(&error_response).await?;
+                    // Check if this is a terminate request
+                    if e.to_string() == "TERMINATE_CONNECTION" {
+                        info!("👋 Client {} requested connection termination", peer_addr);
+                        break; // Exit the query loop gracefully
+                    } else {
+                        error!("❌ Message processing error for {}: {}", peer_addr, e);
+                        let mut error_response = create_postgres_error_response("42000", &format!("Query failed: {}", e));
+                        
+                        // Add ready-for-query message after error to prevent client hang
+                        error_response.push(b'Z');
+                        error_response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
+                        error_response.push(b'I'); // Status: 'I' = idle
+                        
+                        socket.write_all(&error_response).await?;
+                    }
                 }
             }
         }
@@ -906,6 +918,7 @@ async fn handle_postgres_message(
         b'D' => handle_describe_message(payload, connection_state).await,
         b'C' => handle_close_message(payload, connection_state).await,
         b'S' => handle_sync_message().await,
+        b'X' => handle_terminate_message().await,
         _ => {
             warn!("❓ Unsupported PostgreSQL message type: '{}' (0x{:02X})", 
                   if message_type.is_ascii_graphic() { message_type as char } else { '?' }, 
@@ -1180,8 +1193,22 @@ async fn handle_sync_message() -> Result<Vec<u8>> {
     Ok(create_ready_for_query_response())
 }
 
+async fn handle_terminate_message() -> Result<Vec<u8>> {
+    info!("🔚 Terminate: Client requested graceful connection termination");
+    // Return a special marker that signals the connection should be closed
+    // We'll use an error with a specific message that the caller can check
+    Err(anyhow::anyhow!("TERMINATE_CONNECTION"))
+}
+
 async fn handle_simple_query(query: &str, session: &crate::auth::AuthenticatedSession) -> Result<String> {
     debug!("🔍 Processing query: {}", query.trim());
+    
+    // Handle empty queries (just whitespace and/or semicolons)
+    let cleaned_query = query.trim().trim_end_matches(';').trim();
+    if cleaned_query.is_empty() {
+        info!("⚪ Empty query received, returning empty result");
+        return Ok(create_empty_query_response());
+    }
     
     let trimmed_query = query.trim().to_uppercase();
     
@@ -1354,6 +1381,12 @@ fn create_command_complete_response_text(command_tag: &str) -> String {
     // For Simple Query protocol, we return a text response that will be formatted later
     // The actual PostgreSQL CommandComplete message will be created by format_as_postgres_result
     format!("COMMAND_COMPLETE:{}", command_tag)
+}
+
+fn create_empty_query_response() -> String {
+    // Return an empty CSV result that will be formatted as an empty PostgreSQL result
+    // This will create a response with no rows
+    String::new()
 }
 
 #[allow(dead_code)]
@@ -1864,6 +1897,30 @@ fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
         return response;
     }
     
+    // Handle empty query response
+    if csv_data.trim().is_empty() {
+        // For empty queries, return empty result set with command complete
+        // Empty row description message: 'T' + length + field count (0)
+        response.push(b'T');
+        response.extend_from_slice(&6u32.to_be_bytes()); // Length: 4 + 2 = 6
+        response.extend_from_slice(&0u16.to_be_bytes()); // 0 fields
+        
+        // Command complete message: 'C' + length + tag
+        response.push(b'C');
+        let tag = b"SELECT 0";
+        let tag_length = 4 + tag.len() + 1; // 4 bytes for length + tag + null terminator
+        response.extend_from_slice(&(tag_length as u32).to_be_bytes());
+        response.extend_from_slice(tag);
+        response.push(0); // Null terminator
+        
+        // Ready for query message: 'Z' + length + status
+        response.push(b'Z');
+        response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
+        response.push(b'I'); // Status: 'I' = idle
+        
+        return response;
+    }
+    
     let lines: Vec<&str> = csv_data.trim().split('\n').collect();
     if lines.is_empty() {
         return response;
@@ -1935,6 +1992,13 @@ fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
     
     response
 }
+
+async fn handle_terminate_message() -> Result<Vec<u8>> {
+    info!("🔚 Terminate: Client requested graceful connection termination");
+    // Return a special marker that signals the connection should be closed
+    Err(anyhow::anyhow!("TERMINATE_CONNECTION"))
+}
+
 // Helper functions for Extended Query Protocol
 
 fn extract_null_terminated_string(data: &[u8], pos: &mut usize) -> Result<String> {
