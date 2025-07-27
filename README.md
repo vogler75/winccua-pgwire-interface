@@ -10,7 +10,7 @@ A PostgreSQL wire protocol server that acts as a proxy to a WinCC UA GraphQL bac
   - `LoggedTagValues` - Historical tag data with timestamp filtering
   - `ActiveAlarms` - Current active alarms  
   - `LoggedAlarms` - Historical alarm data
-- **SQL Support**: SELECT queries with WHERE clauses, filtering, and LIKE patterns
+- **SQL Support**: SELECT queries with WHERE clauses, filtering, and LIKE patterns with wildcards
 - **GraphQL Integration**: Translates SQL queries to GraphQL calls
 
 ## Quick Start
@@ -41,21 +41,6 @@ cargo run -- --bind-addr 127.0.0.1:5432
 cargo run -- --graphql-url "http://your-server/graphql" --bind-addr 127.0.0.1:5432
 ```
 
-### Connecting
-
-#### ✅ PostgreSQL Client Compatibility
-
-**Current Status**: The server implements **PostgreSQL wire protocol** compatible with psql, DBeaver, pgAdmin, and other SQL clients.
-
-**Supported Features**:
-
-1. **SSL Negotiation**: Properly handles and rejects SSL requests with standard PostgreSQL protocol
-2. **Password Authentication**: Full PostgreSQL cleartext password authentication flow
-3. **GraphQL Integration**: Username/password authentication via WinCC UA GraphQL backend
-4. **Simple Query Protocol**: Full support for SELECT queries with proper result formatting
-5. **Parameter Status**: Sends required PostgreSQL session parameters
-6. **Error Handling**: Proper PostgreSQL error message formatting
-
 **Testing with psql**:
 ```bash
 # Connect with psql (SSL disabled for simplicity) 
@@ -71,40 +56,9 @@ SELECT * FROM tagvalues WHERE tag_name = 'HMI_Tag_1';
 SELECT name, priority FROM activealarms WHERE priority >= 10;
 ```
 
-#### Alternative: Testing with Simple TCP Protocol
-
-For debugging or testing purposes, you can still use the simple TCP protocol:
-
-```bash
-# Connect with netcat for low-level testing
-nc localhost 5433
-
-# Send authentication (username:password)
-operator:secret123
-
-# Send SQL queries
-SELECT * FROM tagvalues WHERE tag_name = 'Temperature_01';
-```
-
 #### Debug Mode and Testing
 
-```bash
-# Run with comprehensive debug logging
-./test_debug.sh
-
-# Test PostgreSQL password authentication
-./test_password_auth.sh
-
-# Test psql connectivity
-./test_psql.sh
-
-# Test authentication fixes
-./test_auth_fix.sh
-
-# Test SSL handling
-./test_ssl.sh
-
-# Or manually:
+```
 source setenv.sh
 RUST_LOG=debug cargo run -- --debug --bind-addr 127.0.0.1:5433
 ```
@@ -123,7 +77,8 @@ The debug mode shows detailed connection information including:
 ```sql
 CREATE TABLE tagvalues (
     tag_name TEXT,
-    timestamp TIMESTAMPTZ,
+    timestamp TIMESTAMP,
+    timestamp_ms BIGINT,
     numeric_value NUMERIC,
     string_value TEXT
 );
@@ -133,7 +88,8 @@ CREATE TABLE tagvalues (
 ```sql  
 CREATE TABLE loggedtagvalues (
     tag_name TEXT,
-    timestamp TIMESTAMPTZ, 
+    timestamp TIMESTAMP,
+    timestamp_ms BIGINT,
     numeric_value NUMERIC,
     string_value TEXT
 );
@@ -145,11 +101,11 @@ CREATE TABLE activealarms (
     name TEXT,
     instance_id INTEGER,
     alarm_group_id INTEGER,
-    raise_time TIMESTAMPTZ,
-    acknowledgment_time TIMESTAMPTZ,
-    clear_time TIMESTAMPTZ,
-    reset_time TIMESTAMPTZ,
-    modification_time TIMESTAMPTZ,
+    raise_time TIMESTAMP,
+    acknowledgment_time TIMESTAMP,
+    clear_time TIMESTAMP,
+    reset_time TIMESTAMP,
+    modification_time TIMESTAMP,
     state TEXT,
     priority INTEGER,
     event_text TEXT,
@@ -163,9 +119,27 @@ CREATE TABLE activealarms (
 ```
 
 ### LoggedAlarms
-Same as ActiveAlarms plus:
 ```sql
-duration TEXT
+CREATE TABLE loggedalarms (
+    name TEXT,
+    instance_id INTEGER,
+    alarm_group_id INTEGER,
+    raise_time TIMESTAMP,
+    acknowledgment_time TIMESTAMP,
+    clear_time TIMESTAMP,
+    reset_time TIMESTAMP,
+    modification_time TIMESTAMP,
+    state TEXT,
+    priority INTEGER,
+    event_text TEXT,
+    info_text TEXT,
+    origin TEXT,
+    area TEXT,
+    value TEXT,
+    host_name TEXT,
+    user_name TEXT,
+    duration TEXT
+);
 ```
 
 ## Example Queries
@@ -185,11 +159,35 @@ LIMIT 100;
 -- Find tags with LIKE pattern (uses GraphQL browse)
 SELECT * FROM tagvalues WHERE tag_name LIKE 'Temp%';
 
+-- LIKE patterns with wildcards for LoggedTagValues (note the second % is important)
+SELECT * FROM loggedtagvalues WHERE tag_name LIKE 'HMI_Tag_%:%';
+
 -- Get active alarms
 SELECT name, priority, event_text, raise_time 
 FROM activealarms 
 WHERE priority >= 10;
 ```
+
+## LIKE Pattern Support
+
+The server supports SQL LIKE patterns with wildcards (`%` and `_`) for tag_name filtering:
+
+- **TagValues**: Standard LIKE patterns work normally
+  ```sql
+  SELECT * FROM tagvalues WHERE tag_name LIKE 'Temp%';
+  SELECT * FROM tagvalues WHERE tag_name LIKE 'HMI_Tag_1_';
+  ```
+
+- **LoggedTagValues**: When using LIKE patterns, ensure proper format for logging tag names
+  ```sql
+  -- ✅ Correct: Include both wildcards for proper browse filtering
+  SELECT * FROM loggedtagvalues WHERE tag_name LIKE 'HMI_Tag_%:%';
+  
+  -- ❌ Incorrect: Missing second % may not return expected results
+  SELECT * FROM loggedtagvalues WHERE tag_name LIKE 'HMI_Tag_%';
+  ```
+
+**Note**: LIKE patterns trigger GraphQL browse queries with `objectTypeFilters="LOGGINGTAG"` for LoggedTagValues to ensure only logging-enabled tags are returned.
 
 ## Configuration
 
@@ -208,40 +206,8 @@ Options:
   -h, --help                     Print help
 ```
 
-## Development Status
-
-This is currently a **working implementation** with:
-
-✅ **Completed:**
-- Basic project structure and dependencies  
-- GraphQL client with authentication (including error code handling)
-- SQL query parsing and validation
-- **PostgreSQL Wire Protocol Support** (compatible with psql, DBeaver, pgAdmin)
-- Authentication flow with proper error handling
-- SSL connection handling for PostgreSQL clients
-- **All 4 Virtual Table Implementations:**
-  - `TagValues` - Current tag values with filtering
-  - `LoggedTagValues` - Historical data with timestamp filtering  
-  - `ActiveAlarms` - Current alarms with filter strings
-  - `LoggedAlarms` - Historical alarms with time ranges
-- Full SQL-to-GraphQL translation
-- WHERE clauses, IN operators, LIKE patterns, ORDER BY, LIMIT
-- LIKE pattern support via GraphQL browse
-- Comprehensive debug logging
-- PostgreSQL result formatting and error handling
-
-🔄 **Ready for Production Use:**
-- Connect with any PostgreSQL client
-- Full query support for all virtual tables
-- Proper PostgreSQL protocol compliance
-
 📋 **Future Enhancements:**
-- Extended Query Protocol (prepared statements)
-- Advanced SQL features (JOINs, aggregations)
-- Connection pooling
-- Performance optimizations
 - SSL/TLS support
-- Comprehensive testing
 
 ## Architecture
 
@@ -252,19 +218,11 @@ PostgreSQL Wire Protocol Server
        ↓ (Parse SQL) 
 Query Translator
        ↓ (GraphQL queries)
-WinCC UA GraphQL Server
+WinCC Unified GraphQL Server
        ↓ (Industrial data)
-WinCC UA System
+WinCC Unified System
 ```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes  
-4. Add tests
-5. Submit a pull request
 
 ## License
 
-[Your License Here]
+GNU GENERAL PUBLIC LICENSE Version 3

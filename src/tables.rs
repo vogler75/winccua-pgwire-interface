@@ -24,14 +24,14 @@ impl VirtualTable {
             Self::TagValues => vec![
                 ("tag_name", Type::TEXT),
                 ("timestamp", Type::TIMESTAMP),
-                ("timestamp_ms", Type::NUMERIC),
+                ("timestamp_ms", Type::INT8),
                 ("numeric_value", Type::NUMERIC),
                 ("string_value", Type::TEXT),
             ],
             Self::LoggedTagValues => vec![
                 ("tag_name", Type::TEXT),
                 ("timestamp", Type::TIMESTAMP),
-                ("timestamp_ms", Type::NUMERIC),
+                ("timestamp_ms", Type::INT8),
                 ("numeric_value", Type::NUMERIC),
                 ("string_value", Type::TEXT),
             ],
