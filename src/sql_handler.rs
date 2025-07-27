@@ -4,7 +4,7 @@ use sqlparser::ast::{BinaryOperator, Expr, OrderByExpr, Query, Select, SelectIte
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use tracing::{debug, warn};
-use chrono::Local;
+use chrono::{Duration, Local, DateTime};
 
 pub struct SqlHandler;
 
@@ -331,6 +331,10 @@ impl SqlHandler {
                     _ => Err(anyhow!("Unsupported function: {}", func.name)),
                 }
             }
+            Expr::BinaryOp { left, op, right } => {
+                // Handle date/time arithmetic with intervals
+                Self::handle_interval_arithmetic(left, op, right, column)
+            }
             _ => Err(anyhow!("Complex value expressions are not supported")),
         }
     }
@@ -393,6 +397,10 @@ impl SqlHandler {
                     _ => Err(anyhow!("Unsupported function: {}", func.name)),
                 }
             }
+            Expr::BinaryOp { left, op, right } => {
+                // Handle date/time arithmetic with intervals
+                Self::handle_interval_arithmetic(left, op, right, "")
+            }
             _ => Err(anyhow!("Complex value expressions are not supported")),
         }
     }
@@ -449,5 +457,236 @@ impl SqlHandler {
         }
 
         Ok(())
+    }
+
+    fn handle_interval_arithmetic(left: &Expr, op: &BinaryOperator, right: &Expr, column: &str) -> Result<FilterValue> {
+        // Try to extract interval from either side
+        if let Ok(interval_duration) = Self::extract_interval(right) {
+            // Get the base timestamp from left side
+            let base_timestamp = if column.is_empty() {
+                Self::extract_filter_value(left)?
+            } else {
+                Self::extract_filter_value_for_column(left, column)?
+            };
+            
+            if let FilterValue::Timestamp(ts_str) = base_timestamp {
+                // Parse the timestamp
+                let base_dt = Self::parse_timestamp(&ts_str)?;
+                
+                // Apply the operation
+                let result_dt = match op {
+                    BinaryOperator::Plus => base_dt + interval_duration,
+                    BinaryOperator::Minus => base_dt - interval_duration,
+                    _ => return Err(anyhow!("Invalid operator for interval arithmetic")),
+                };
+                
+                // Format back to string
+                let result_str = result_dt.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+                Ok(FilterValue::Timestamp(result_str))
+            } else {
+                Err(anyhow!("Expected timestamp value for date arithmetic"))
+            }
+        } else if let Ok(interval_duration) = Self::extract_interval(left) {
+            // Interval is on the left side
+            let base_timestamp = if column.is_empty() {
+                Self::extract_filter_value(right)?
+            } else {
+                Self::extract_filter_value_for_column(right, column)?
+            };
+            
+            if let FilterValue::Timestamp(ts_str) = base_timestamp {
+                let base_dt = Self::parse_timestamp(&ts_str)?;
+                
+                // For addition, order doesn't matter
+                // For subtraction, interval on left is invalid
+                let result_dt = match op {
+                    BinaryOperator::Plus => base_dt + interval_duration,
+                    BinaryOperator::Minus => return Err(anyhow!("Cannot subtract timestamp from interval")),
+                    _ => return Err(anyhow!("Invalid operator for interval arithmetic")),
+                };
+                
+                let result_str = result_dt.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+                Ok(FilterValue::Timestamp(result_str))
+            } else {
+                Err(anyhow!("Expected timestamp value for date arithmetic"))
+            }
+        } else {
+            Err(anyhow!("No interval found in arithmetic expression"))
+        }
+    }
+
+    fn extract_interval(expr: &Expr) -> Result<Duration> {
+        debug!("Attempting to extract interval from expression: {:?}", expr);
+        
+        // Check if this is an INTERVAL expression
+        if let Expr::Interval(interval) = expr {
+            debug!("Found Expr::Interval: {:?}", interval);
+            
+            // Extract the interval string from the value
+            let interval_str = match &*interval.value {
+                Expr::Value(Value::SingleQuotedString(s)) => s.clone(),
+                _ => return Err(anyhow!("Unsupported interval value format")),
+            };
+            
+            // If leading_field is specified, use it; otherwise parse from the string
+            if let Some(leading_field) = &interval.leading_field {
+                // Parse the numeric value from the string
+                let parts: Vec<&str> = interval_str.trim().split_whitespace().collect();
+                if parts.is_empty() {
+                    return Err(anyhow!("Empty interval string"));
+                }
+                
+                let value = parts[0].parse::<i64>()
+                    .map_err(|_| anyhow!("Invalid interval value: {}", parts[0]))?;
+                
+                use sqlparser::ast::DateTimeField;
+                match leading_field {
+                    DateTimeField::Second => Ok(Duration::seconds(value)),
+                    DateTimeField::Minute => Ok(Duration::minutes(value)),
+                    DateTimeField::Hour => Ok(Duration::hours(value)),
+                    DateTimeField::Day => Ok(Duration::days(value)),
+                    DateTimeField::Week(_) => Ok(Duration::weeks(value)),
+                    DateTimeField::Month => Ok(Duration::days(value * 30)), // Approximate
+                    DateTimeField::Year => Ok(Duration::days(value * 365)), // Approximate
+                    _ => Err(anyhow!("Unsupported interval unit: {:?}", leading_field)),
+                }
+            } else {
+                // Parse the entire string like "1 hour"
+                Self::parse_interval_string(&interval_str)
+            }
+        } 
+        // Check if this might be a function call like INTERVAL('1 hour')
+        else if let Expr::Function(func) = expr {
+            debug!("Found function call: {:?}", func);
+            if func.name.to_string().to_uppercase() == "INTERVAL" {
+                // Extract the interval string from the function argument
+                match &func.args {
+                    sqlparser::ast::FunctionArguments::List(args) if !args.args.is_empty() => {
+                        if let sqlparser::ast::FunctionArg::Unnamed(sqlparser::ast::FunctionArgExpr::Expr(Expr::Value(Value::SingleQuotedString(interval_str)))) = &args.args[0] {
+                            return Self::parse_interval_string(interval_str);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Err(anyhow!("Not an interval function"))
+        }
+        // Check if this is a typed string like INTERVAL '1 hour'
+        else if let Expr::TypedString { data_type, value } = expr {
+            debug!("Found typed string: {:?} with value: {:?}", data_type, value);
+            if data_type.to_string().to_uppercase() == "INTERVAL" {
+                return Self::parse_interval_string(value);
+            }
+            Err(anyhow!("Not an interval typed string"))
+        }
+        else {
+            debug!("Expression type not recognized as interval: {:?}", expr);
+            Err(anyhow!("Not an interval expression"))
+        }
+    }
+    
+    fn parse_interval_string(interval_str: &str) -> Result<Duration> {
+        debug!("Parsing interval string: '{}'", interval_str);
+        
+        // Parse strings like "1 hour", "3 minutes", "7 days", etc.
+        let parts: Vec<&str> = interval_str.trim().split_whitespace().collect();
+        if parts.len() != 2 {
+            return Err(anyhow!("Invalid interval format: expected 'NUMBER UNIT', got '{}'", interval_str));
+        }
+        
+        let value = parts[0].parse::<i64>()
+            .map_err(|_| anyhow!("Invalid interval value: {}", parts[0]))?;
+        
+        let unit = parts[1].to_lowercase();
+        match unit.as_str() {
+            "second" | "seconds" => Ok(Duration::seconds(value)),
+            "minute" | "minutes" => Ok(Duration::minutes(value)),
+            "hour" | "hours" => Ok(Duration::hours(value)),
+            "day" | "days" => Ok(Duration::days(value)),
+            "week" | "weeks" => Ok(Duration::weeks(value)),
+            "month" | "months" => Ok(Duration::days(value * 30)), // Approximate
+            "year" | "years" => Ok(Duration::days(value * 365)), // Approximate
+            _ => Err(anyhow!("Unsupported interval unit: {}", unit)),
+        }
+    }
+
+    fn parse_timestamp(ts_str: &str) -> Result<DateTime<Local>> {
+        use chrono::{NaiveDateTime, TimeZone};
+        
+        // Try various timestamp formats
+        let formats = [
+            "%Y-%m-%dT%H:%M:%S%.3fZ",
+            "%Y-%m-%dT%H:%M:%S%.3f",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S%.3f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+        ];
+        
+        for format in &formats {
+            if let Ok(naive) = NaiveDateTime::parse_from_str(ts_str, format) {
+                return Ok(Local.from_local_datetime(&naive).unwrap());
+            }
+            // Try parsing as date only
+            if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(ts_str, format) {
+                let naive_datetime = naive_date.and_hms_opt(0, 0, 0).unwrap();
+                return Ok(Local.from_local_datetime(&naive_datetime).unwrap());
+            }
+        }
+        
+        Err(anyhow!("Could not parse timestamp: {}", ts_str))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_interval_parsing() {
+        let sql = "SELECT tag_name, numeric_value, timestamp FROM loggedtagvalues where timestamp > CURRENT_TIME - INTERVAL '1 hour' and tag_name like '%PV%Watt%:%'";
+        
+        let result = SqlHandler::parse_query(sql);
+        assert!(result.is_ok(), "Failed to parse query with INTERVAL: {:?}", result.err());
+        
+        let query_info = result.unwrap();
+        assert!(matches!(query_info.table, VirtualTable::LoggedTagValues));
+        
+        // Check that we have filters
+        assert!(!query_info.filters.is_empty());
+        
+        // Find the timestamp filter
+        let timestamp_filter = query_info.filters.iter()
+            .find(|f| f.column == "timestamp");
+        assert!(timestamp_filter.is_some(), "No timestamp filter found");
+        
+        // Check that the timestamp filter has a computed value (not just the original expression)
+        if let Some(filter) = timestamp_filter {
+            if let FilterValue::Timestamp(ts) = &filter.value {
+                // The timestamp should be calculated (not the original CURRENT_TIME)
+                assert!(!ts.contains("CURRENT_TIME"), "Timestamp should be calculated, not contain CURRENT_TIME");
+            }
+        }
+    }
+    
+    #[test]
+    fn test_various_intervals() {
+        let test_cases = [
+            ("INTERVAL '30 seconds'", true),
+            ("INTERVAL '15 minutes'", true),
+            ("INTERVAL '2 hours'", true),
+            ("INTERVAL '1 day'", true),
+            ("INTERVAL '1 week'", true),
+        ];
+        
+        for (interval_str, should_pass) in test_cases {
+            let sql = format!("SELECT * FROM loggedtagvalues WHERE timestamp > CURRENT_TIME - {} AND tag_name = 'Test'", interval_str);
+            let result = SqlHandler::parse_query(&sql);
+            
+            if should_pass {
+                assert!(result.is_ok(), "Failed to parse query with {}: {:?}", interval_str, result.err());
+            }
+        }
     }
 }
