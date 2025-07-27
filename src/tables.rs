@@ -102,7 +102,7 @@ impl VirtualTable {
 
     pub fn is_virtual_column(&self, column: &str) -> bool {
         match self {
-            Self::TagList => column == "language",
+            Self::TagList => matches!(column, "language" | "display_name"),
             Self::LoggedAlarms => matches!(column, "filterString" | "system_name" | "filter_language"),
             _ => false,
         }

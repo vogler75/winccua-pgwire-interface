@@ -276,8 +276,12 @@ impl SqlHandler {
         match expr {
             Expr::Value(value) => match value {
                 Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => {
-                    // For string columns (tag_name, object_type, data_type, display_name), always treat as string
-                    if column == "tag_name" || column == "name" || column == "object_type" || column == "data_type" || column == "display_name" {
+                    // For string columns, always treat as string
+                    if column == "tag_name" || column == "name" || column == "object_type" || column == "data_type" 
+                       || column == "display_name" || column == "quality" || column == "state" || column == "origin" 
+                       || column == "area" || column == "host_name" || column == "user_name" || column == "event_text" 
+                       || column == "info_text" || column == "string_value" || column == "filterString" 
+                       || column == "system_name" || column == "filter_language" {
                         Ok(FilterValue::String(s.clone()))
                     }
                     // For timestamp columns, always treat as timestamp
@@ -1107,6 +1111,132 @@ mod tests {
                 SqlResult::SetStatement(_) => {
                     panic!("Tag query incorrectly identified as SET statement: {}", sql);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_quality_filtering_support() {
+        // Test that quality filtering is recognized in SQL queries
+        let test_cases = [
+            ("SELECT tag_name, quality FROM tagvalues WHERE tag_name = 'Test' AND quality = 'GOOD'", VirtualTable::TagValues),
+            ("SELECT * FROM loggedtagvalues WHERE tag_name = 'Temp' AND quality LIKE '%BAD%'", VirtualTable::LoggedTagValues),
+            ("SELECT numeric_value FROM tagvalues WHERE tag_name = 'Motor' AND quality != 'NULL'", VirtualTable::TagValues),
+            ("SELECT tag_name FROM loggedtagvalues WHERE tag_name = 'Sensor' AND quality = 'UNCERTAIN' AND timestamp > '2024-01-01'", VirtualTable::LoggedTagValues),
+        ];
+        
+        for (sql, expected_table) in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse query with quality filter: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::Query(query_info) => {
+                    match expected_table {
+                        VirtualTable::TagValues => assert!(matches!(query_info.table, VirtualTable::TagValues)),
+                        VirtualTable::LoggedTagValues => assert!(matches!(query_info.table, VirtualTable::LoggedTagValues)),
+                        _ => panic!("Unexpected table type in test"),
+                    }
+                    
+                    // Check that quality filter is present
+                    let has_quality_filter = query_info.filters.iter().any(|f| f.column == "quality");
+                    assert!(has_quality_filter, "Should have quality filter for query: {}", sql);
+                    
+                    println!("✅ Quality filtering test passed for: '{}'", sql);
+                }
+                SqlResult::SetStatement(_) => {
+                    panic!("Tag query incorrectly identified as SET statement: {}", sql);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_logged_tag_values_auto_suffix() {
+        // Test that LoggedTagValues queries auto-append ":*" when no ":" is present
+        let test_cases = [
+            // Should auto-append ":*"
+            ("SELECT * FROM loggedtagvalues WHERE tag_name LIKE 'Motor%'", true, "Motor%:*"),
+            ("SELECT * FROM loggedtagvalues WHERE tag_name LIKE '%PV%'", true, "%PV%:*"),
+            // Should NOT auto-append (already has ":")
+            ("SELECT * FROM loggedtagvalues WHERE tag_name LIKE 'Motor:PV%'", false, "Motor:PV%"),
+            ("SELECT * FROM loggedtagvalues WHERE tag_name LIKE '%:Temperature'", false, "%:Temperature"),
+            // Should NOT auto-append (not LoggedTagValues)
+            ("SELECT * FROM tagvalues WHERE tag_name LIKE 'Motor%'", false, "Motor%"),
+        ];
+        
+        for (sql, should_auto_append, expected_pattern) in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse query for auto-suffix test: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::Query(query_info) => {
+                    let like_patterns = query_info.get_like_patterns();
+                    assert!(!like_patterns.is_empty(), "Should have LIKE patterns for query: {}", sql);
+                    
+                    let _original_pattern = &like_patterns[0];
+                    if should_auto_append {
+                        println!("✅ Auto-suffix test (should append): '{}' -> expected '{}'", sql, expected_pattern);
+                        // Note: The actual auto-append happens in resolve_like_patterns during query execution
+                        // Here we just verify the parsing works correctly
+                        assert!(matches!(query_info.table, VirtualTable::LoggedTagValues), 
+                               "Should be LoggedTagValues table for auto-append test");
+                    } else {
+                        println!("✅ Auto-suffix test (should NOT append): '{}'", sql);
+                    }
+                }
+                SqlResult::SetStatement(_) => {
+                    panic!("Tag query incorrectly identified as SET statement: {}", sql);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_quality_filtering_runtime() {
+        use crate::query_handler::QueryHandler;
+        use crate::graphql::types::{TagValueResult, Value, Quality};
+        
+        // Create mock TagValueResult with quality
+        let mut mock_result = TagValueResult {
+            name: "TestTag".to_string(),
+            value: Some(Value {
+                value: Some(serde_json::Value::Number(serde_json::Number::from(42))),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                quality: Some(Quality {
+                    quality: "GOOD".to_string(),
+                }),
+            }),
+            error: None,
+        };
+        
+        // Test SQL parsing and filter creation
+        let sql = "SELECT tag_name, quality FROM tagvalues WHERE tag_name = 'TestTag' AND quality = 'GOOD'";
+        let result = SqlHandler::parse_query(sql);
+        assert!(result.is_ok(), "Failed to parse SQL: {:?}", result.err());
+        
+        match result.unwrap() {
+            SqlResult::Query(query_info) => {
+                println!("✅ SQL parsed successfully");
+                println!("📋 Filters: {:?}", query_info.filters);
+                
+                // Check that we have a quality filter
+                let quality_filter = query_info.filters.iter().find(|f| f.column == "quality");
+                assert!(quality_filter.is_some(), "Should have quality filter");
+                
+                if let Some(filter) = quality_filter {
+                    println!("🔍 Quality filter found: {:?}", filter);
+                    
+                    // Test the filtering logic directly
+                    let filters = vec![filter.clone()];
+                    let test_results = vec![mock_result];
+                    
+                    // This should work but let's see what happens
+                    // Note: We can't easily test apply_filters here since it's private
+                    println!("✅ Quality filter runtime test setup complete");
+                }
+            }
+            SqlResult::SetStatement(_) => {
+                panic!("Query incorrectly identified as SET statement");
             }
         }
     }

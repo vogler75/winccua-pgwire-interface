@@ -268,9 +268,22 @@ impl QueryHandler {
         for pattern in patterns {
             debug!("🔍 Resolving LIKE pattern: '{}'", pattern);
             
+            // For LoggedTagValues, auto-append ":*" if pattern doesn't contain ":"
+            let processed_pattern = if matches!(query_info.table, crate::tables::VirtualTable::LoggedTagValues) {
+                if !pattern.contains(':') {
+                    let new_pattern = format!("{}:*", pattern);
+                    debug!("📝 Auto-appended ':*' to LoggedTagValues pattern: '{}' -> '{}'", pattern, new_pattern);
+                    new_pattern
+                } else {
+                    pattern.clone()
+                }
+            } else {
+                pattern.clone()
+            };
+            
             // Convert SQL LIKE pattern to GraphQL browse pattern
-            let browse_pattern = Self::convert_like_to_browse_pattern(&pattern);
-            debug!("🌐 Converted to browse pattern: '{}' -> '{}'", pattern, browse_pattern);
+            let browse_pattern = Self::convert_like_to_browse_pattern(&processed_pattern);
+            debug!("🌐 Converted to browse pattern: '{}' -> '{}'", processed_pattern, browse_pattern);
             
             // Call appropriate GraphQL browse function based on table type
             let browse_results = match query_info.table {
@@ -352,6 +365,7 @@ impl QueryHandler {
     fn apply_filters(results: Vec<crate::graphql::types::TagValueResult>, filters: &[ColumnFilter]) -> Result<Vec<crate::graphql::types::TagValueResult>> {
         let mut filtered = Vec::new();
         
+        
         for result in results {
             let mut include = true;
             
@@ -376,6 +390,22 @@ impl QueryHandler {
                         if let Some(value) = &result.value {
                             if let Some(string_val) = value.value.as_ref().and_then(|v| v.as_str()) {
                                 if !Self::check_string_filter(string_val, &filter.operator, &filter.value) {
+                                    include = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    "quality" => {
+                        if let Some(value) = &result.value {
+                            if let Some(quality) = &value.quality {
+                                if !Self::check_string_filter(&quality.quality, &filter.operator, &filter.value) {
+                                    include = false;
+                                    break;
+                                }
+                            } else {
+                                // No quality available, check if filter expects NULL
+                                if !Self::check_null_filter(&filter.operator, &filter.value) {
                                     include = false;
                                     break;
                                 }
@@ -445,6 +475,7 @@ impl QueryHandler {
         // Similar to apply_filters but for logged tag values
         let mut filtered = Vec::new();
         
+        
         for result in results {
             let mut include = true;
             
@@ -465,6 +496,20 @@ impl QueryHandler {
                     "string_value" => {
                         if let Some(string_val) = result.value.as_ref().and_then(|v| v.as_str()) {
                             if !Self::check_string_filter(string_val, &filter.operator, &filter.value) {
+                                include = false;
+                                break;
+                            }
+                        }
+                    }
+                    "quality" => {
+                        if let Some(quality) = &result.quality {
+                            if !Self::check_string_filter(&quality.quality, &filter.operator, &filter.value) {
+                                include = false;
+                                break;
+                            }
+                        } else {
+                            // No quality available, check if filter expects NULL
+                            if !Self::check_null_filter(&filter.operator, &filter.value) {
                                 include = false;
                                 break;
                             }
@@ -638,6 +683,28 @@ impl QueryHandler {
         } else {
             // Fallback to simple contains check
             value.contains(&pattern.replace('%', ""))
+        }
+    }
+    
+    fn check_null_filter(operator: &FilterOperator, filter_value: &FilterValue) -> bool {
+        match operator {
+            FilterOperator::Equal => {
+                // Check if the filter is looking for NULL values
+                if let Some(target) = filter_value.as_string() {
+                    target.to_uppercase() == "NULL"
+                } else {
+                    false
+                }
+            }
+            FilterOperator::NotEqual => {
+                // If filtering for NOT NULL, then missing values should be excluded
+                if let Some(target) = filter_value.as_string() {
+                    target.to_uppercase() != "NULL"
+                } else {
+                    true
+                }
+            }
+            _ => false, // Other operators don't make sense for NULL checks
         }
     }
     
