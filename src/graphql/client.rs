@@ -187,10 +187,6 @@ impl GraphQLClient {
             }
         "#;
 
-        debug!("Getting logged tag values for names: {:?}", names);
-        debug!("Time range: {:?} to {:?}", start_time, end_time);
-        debug!("Max values: {:?}, Sorting mode: {:?}", max_values, sorting_mode);
-
         // Store copies for error reporting
         let names_copy = names.clone();
         let start_time_copy = start_time.clone();
@@ -208,7 +204,10 @@ impl GraphQLClient {
             },
         };
 
-        debug!("Request JSON: {}", serde_json::to_string_pretty(&request).unwrap_or_else(|_| "Failed to serialize".to_string()));
+        debug!("🚀 Generated GraphQL query:");
+        debug!("📄 Query: {}", query);
+        debug!("🔧 Variables: {:#?}", request.variables);
+        debug!("Getting logged tag values");
 
         let response = self
             .client
@@ -396,10 +395,11 @@ impl GraphQLClient {
         start_time: Option<String>,
         end_time: Option<String>,
         max_results: Option<i32>,
+        filter_language: Option<String>,
     ) -> Result<Vec<LoggedAlarm>> {
         let query = r#"
-            query LoggedAlarms($systemNames: [String!], $filterString: String!, $startTime: Timestamp, $endTime: Timestamp, $maxNumberOfResults: Int) {
-                loggedAlarms(systemNames: $systemNames, filterString: $filterString, startTime: $startTime, endTime: $endTime, maxNumberOfResults: $maxNumberOfResults) {
+            query LoggedAlarms($systemNames: [String], $filterString: String, $filterLanguage: String, $startTime: Timestamp, $endTime: Timestamp, $maxNumberOfResults: Int) {
+                loggedAlarms(systemNames: $systemNames, filterString: $filterString, filterLanguage: $filterLanguage, startTime: $startTime, endTime: $endTime, maxNumberOfResults: $maxNumberOfResults) {
                     name
                     instanceID
                     alarmGroupID
@@ -425,16 +425,19 @@ impl GraphQLClient {
         let request = LoggedAlarmsRequest {
             query: query.to_string(),
             variables: LoggedAlarmsVariables {
-                system_names,
-                filter_string,
-                filter_language: "en-US".to_string(),
-                languages: vec!["en-US".to_string()],
+                system_names: if system_names.is_empty() { None } else { Some(system_names) },
+                filter_string: if filter_string.is_empty() { None } else { Some(filter_string) },
+                filter_language,
+                languages: None, // Set to None since we don't set it from SQL queries
                 start_time,
                 end_time,
                 max_number_of_results: max_results,
             },
         };
 
+        debug!("🚀 Generated GraphQL query:");
+        debug!("📄 Query: {}", query);
+        debug!("🔧 Variables: {:#?}", request.variables);
         debug!("Getting logged alarms");
 
         let response = self
@@ -487,10 +490,10 @@ impl GraphQLClient {
             },
         };
 
+        debug!("🚀 Generated GraphQL query:");
+        debug!("📄 Query: {}", query);
+        debug!("🔧 Variables: {:#?}", request.variables);
         debug!("Browsing tags");
-        debug!("GraphQL query: {}", query);
-        debug!("GraphQL variables: nameFilters={:?}, objectTypeFilters={:?}", 
-               request.variables.name_filters, request.variables.object_type_filters);
 
         let response = self
             .client
@@ -547,10 +550,10 @@ impl GraphQLClient {
             },
         };
 
+        debug!("🚀 Generated GraphQL query:");
+        debug!("📄 Query: {}", query);
+        debug!("🔧 Variables: {:#?}", request.variables);
         debug!("Browsing tags with object type filters");
-        debug!("GraphQL query: {}", query);
-        debug!("GraphQL variables: nameFilters={:?}, objectTypeFilters={:?}, language={}", 
-               request.variables.name_filters, request.variables.object_type_filters, request.variables.language);
 
         let response = self
             .client

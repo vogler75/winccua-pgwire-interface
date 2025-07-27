@@ -171,6 +171,7 @@ impl QueryHandler {
                     tag_name: result.logging_tag_name.clone(),
                     timestamp: value_entry.value.timestamp.clone(),
                     value: value_entry.value.value.clone(),
+                    quality: value_entry.value.quality.clone(),
                 });
             }
         }
@@ -209,8 +210,10 @@ impl QueryHandler {
     async fn execute_logged_alarms_query(query_info: &QueryInfo, session: &AuthenticatedSession) -> Result<String> {
         info!("📚 Executing LoggedAlarms query");
         
-        // Get timestamp range
-        let (start_time, mut end_time) = query_info.get_timestamp_filter().unwrap_or((None, None));
+        // Get modification_time range (prioritize over timestamp)
+        let (start_time, mut end_time) = query_info.get_modification_time_filter()
+            .or_else(|| query_info.get_timestamp_filter())
+            .unwrap_or((None, None));
         
         // If endtime is not specified, use current UTC time
         if end_time.is_none() {
@@ -221,26 +224,37 @@ impl QueryHandler {
         
         debug!("⏰ Time range: {:?} to {:?}", start_time, end_time);
         
-        // Extract filter string
-        let filter_string = Self::extract_alarm_filter_string(&query_info.filters).unwrap_or_default();
-        debug!("🔍 Alarm filter string: {:?}", filter_string);
+        // Get virtual column parameters
+        let filter_string = query_info.get_filter_string().unwrap_or_default();
+        let system_names = query_info.get_system_names();
+        let filter_language = query_info.get_filter_language();
         
-        // Get limit
+        // Get limit for maxNumberOfResults
         let limit = query_info.limit.map(|l| l as i32);
+        
+        // Debug GraphQL query parameters
+        debug!("🔧 GraphQL query parameters:");
+        debug!("  📋 systemNames: {:?}", system_names);
+        debug!("  🔍 filterString: {:?}", filter_string);
+        debug!("  🌐 filterLanguage: {:?}", filter_language);
+        debug!("  ⏰ startTime: {:?}", start_time);
+        debug!("  ⏰ endTime: {:?}", end_time);
+        debug!("  📊 maxNumberOfResults: {:?}", limit);
         
         // Call GraphQL
         let alarm_results = session.client.get_logged_alarms(
             &session.token,
-            vec![], // system_names - empty for all systems
+            system_names,
             filter_string,
             start_time,
             end_time,
-            limit
+            limit,
+            filter_language
         ).await?;
         
         debug!("✅ GraphQL returned {} logged alarms", alarm_results.len());
         
-        // Apply additional filters
+        // Apply additional filters (for non-virtual columns)
         let filtered_results = Self::apply_logged_alarm_filters(alarm_results, &query_info.filters)?;
         debug!("✂️  After filtering: {} results", filtered_results.len());
         
@@ -519,8 +533,12 @@ impl QueryHandler {
                             }
                         }
                     }
-                    "timestamp" => {
+                    "timestamp" | "modification_time" => {
                         // Handled by GraphQL query
+                        continue;
+                    }
+                    "filterString" | "system_name" | "filter_language" => {
+                        // Virtual columns - handled by GraphQL query, skip in post-processing
                         continue;
                     }
                     _ => continue,
@@ -761,6 +779,11 @@ impl QueryHandler {
                                 .map(|s| s.to_string())
                                 .unwrap_or_else(|| "NULL".to_string())
                         }
+                        "quality" => {
+                            value.quality.as_ref()
+                                .map(|q| q.quality.clone())
+                                .unwrap_or_else(|| "NULL".to_string())
+                        }
                         _ => "NULL".to_string(),
                     };
                     row_values.push(cell_value);
@@ -828,6 +851,11 @@ impl QueryHandler {
                         result.value.as_ref()
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string())
+                            .unwrap_or_else(|| "NULL".to_string())
+                    }
+                    "quality" => {
+                        result.quality.as_ref()
+                            .map(|q| q.quality.clone())
                             .unwrap_or_else(|| "NULL".to_string())
                     }
                     _ => "NULL".to_string(),

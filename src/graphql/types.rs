@@ -144,6 +144,7 @@ pub struct LoggedTagValue {
     pub tag_name: String,
     pub timestamp: String,
     pub value: Option<serde_json::Value>,
+    pub quality: Option<Quality>,
 }
 
 // Active Alarms
@@ -217,18 +218,19 @@ pub struct LoggedAlarmsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggedAlarmsVariables {
-    #[serde(rename = "systemNames")]
-    pub system_names: Vec<String>,
-    #[serde(rename = "filterString")]
-    pub filter_string: String,
-    #[serde(rename = "filterLanguage")]
-    pub filter_language: String,
-    pub languages: Vec<String>,
-    #[serde(rename = "startTime")]
+    #[serde(rename = "systemNames", skip_serializing_if = "Option::is_none")]
+    pub system_names: Option<Vec<String>>,
+    #[serde(rename = "filterString", skip_serializing_if = "Option::is_none")]
+    pub filter_string: Option<String>,
+    #[serde(rename = "filterLanguage", skip_serializing_if = "Option::is_none")]
+    pub filter_language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub languages: Option<Vec<String>>,
+    #[serde(rename = "startTime", skip_serializing_if = "Option::is_none")]
     pub start_time: Option<String>,
-    #[serde(rename = "endTime")]
+    #[serde(rename = "endTime", skip_serializing_if = "Option::is_none")]
     pub end_time: Option<String>,
-    #[serde(rename = "maxNumberOfResults")]
+    #[serde(rename = "maxNumberOfResults", skip_serializing_if = "Option::is_none")]
     pub max_number_of_results: Option<i32>,
 }
 

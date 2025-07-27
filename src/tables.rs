@@ -29,6 +29,7 @@ impl VirtualTable {
                 ("timestamp_ms", Type::INT8),
                 ("numeric_value", Type::NUMERIC),
                 ("string_value", Type::TEXT),
+                ("quality", Type::TEXT),
             ],
             Self::LoggedTagValues => vec![
                 ("tag_name", Type::TEXT),
@@ -36,6 +37,7 @@ impl VirtualTable {
                 ("timestamp_ms", Type::INT8),
                 ("numeric_value", Type::NUMERIC),
                 ("string_value", Type::TEXT),
+                ("quality", Type::TEXT),
             ],
             Self::ActiveAlarms => vec![
                 ("name", Type::TEXT),
@@ -101,6 +103,7 @@ impl VirtualTable {
     pub fn is_virtual_column(&self, column: &str) -> bool {
         match self {
             Self::TagList => column == "language",
+            Self::LoggedAlarms => matches!(column, "filterString" | "system_name" | "filter_language"),
             _ => false,
         }
     }
@@ -348,5 +351,84 @@ impl QueryInfo {
             }
         }
         None
+    }
+
+    // Methods for LoggedAlarms virtual columns
+    pub fn get_filter_string(&self) -> Option<String> {
+        for filter in &self.filters {
+            if filter.column == "filterString" && matches!(filter.operator, FilterOperator::Equal) {
+                return filter.value.as_string().map(|s| s.to_string());
+            }
+        }
+        None
+    }
+
+    pub fn get_system_names(&self) -> Vec<String> {
+        for filter in &self.filters {
+            if filter.column == "system_name" {
+                match &filter.operator {
+                    FilterOperator::Equal => {
+                        if let Some(name) = filter.value.as_string() {
+                            return vec![name.to_string()];
+                        }
+                    }
+                    FilterOperator::In => {
+                        if let Some(names) = filter.value.as_list() {
+                            return names.clone();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        vec![]
+    }
+
+    pub fn get_filter_language(&self) -> Option<String> {
+        for filter in &self.filters {
+            if filter.column == "filter_language" && matches!(filter.operator, FilterOperator::Equal) {
+                return filter.value.as_string().map(|s| s.to_string());
+            }
+        }
+        None
+    }
+
+    pub fn get_modification_time_filter(&self) -> Option<(Option<String>, Option<String>)> {
+        let mut start_time = None;
+        let mut end_time = None;
+
+        for filter in &self.filters {
+            if filter.column == "modification_time" {
+                match &filter.operator {
+                    FilterOperator::GreaterThan | FilterOperator::GreaterThanOrEqual => {
+                        if let FilterValue::Timestamp(ts) = &filter.value {
+                            start_time = Some(ts.clone());
+                        }
+                    }
+                    FilterOperator::LessThan | FilterOperator::LessThanOrEqual => {
+                        if let FilterValue::Timestamp(ts) = &filter.value {
+                            end_time = Some(ts.clone());
+                        }
+                    }
+                    FilterOperator::Between => {
+                        if let FilterValue::Range(start, end) = &filter.value {
+                            if let FilterValue::Timestamp(ts) = start.as_ref() {
+                                start_time = Some(ts.clone());
+                            }
+                            if let FilterValue::Timestamp(ts) = end.as_ref() {
+                                end_time = Some(ts.clone());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if start_time.is_some() || end_time.is_some() {
+            Some((start_time, end_time))
+        } else {
+            None
+        }
     }
 }

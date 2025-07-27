@@ -950,4 +950,164 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_logged_alarms_virtual_columns() {
+        // Test that LoggedAlarms queries with virtual columns parse correctly
+        let test_cases = [
+            ("SELECT * FROM loggedalarms WHERE filterString = 'alarm'", "filterString", FilterOperator::Equal),
+            ("SELECT * FROM loggedalarms WHERE system_name = 'System1'", "system_name", FilterOperator::Equal),
+            ("SELECT * FROM loggedalarms WHERE system_name IN ('Sys1', 'Sys2')", "system_name", FilterOperator::In),
+            ("SELECT * FROM loggedalarms WHERE filter_language = 'en-US'", "filter_language", FilterOperator::Equal),
+            ("SELECT * FROM loggedalarms WHERE modification_time > '2024-01-01T00:00:00Z'", "modification_time", FilterOperator::GreaterThan),
+        ];
+        
+        for (sql, expected_column, expected_operator) in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse LoggedAlarms query with virtual column: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::Query(query_info) => {
+                    assert!(matches!(query_info.table, VirtualTable::LoggedAlarms), "Should identify as LoggedAlarms table");
+                    
+                    // Check that the expected filter is present
+                    let target_filter = query_info.filters.iter()
+                        .find(|f| f.column == expected_column);
+                    assert!(target_filter.is_some(), "Should have {} filter for query: {}", expected_column, sql);
+                    
+                    if let Some(filter) = target_filter {
+                        match expected_operator {
+                            FilterOperator::Equal => assert!(matches!(filter.operator, FilterOperator::Equal)),
+                            FilterOperator::In => assert!(matches!(filter.operator, FilterOperator::In)),
+                            FilterOperator::GreaterThan => assert!(matches!(filter.operator, FilterOperator::GreaterThan)),
+                            _ => panic!("Unexpected operator in test: {:?}", expected_operator),
+                        }
+                        println!("✅ LoggedAlarms {} filter parsed: '{}' -> {:?}", expected_column, sql, filter.operator);
+                    }
+                }
+                SqlResult::SetStatement(_) => {
+                    panic!("LoggedAlarms query incorrectly identified as SET statement: {}", sql);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_logged_alarms_limit_and_mixed_filters() {
+        // Test LIMIT clause and mixed virtual/real columns
+        let sql = "SELECT name, modification_time FROM loggedalarms WHERE filterString = 'error' AND system_name IN ('System1', 'System2') AND filter_language = 'de-DE' LIMIT 50";
+        let result = SqlHandler::parse_query(sql);
+        assert!(result.is_ok(), "Failed to parse complex LoggedAlarms query: {:?}", result.err());
+        
+        match result.unwrap() {
+            SqlResult::Query(query_info) => {
+                assert!(matches!(query_info.table, VirtualTable::LoggedAlarms));
+                assert_eq!(query_info.limit, Some(50), "Should parse LIMIT correctly");
+                
+                // Check virtual column extraction methods
+                assert_eq!(query_info.get_filter_string(), Some("error".to_string()));
+                assert_eq!(query_info.get_system_names(), vec!["System1".to_string(), "System2".to_string()]);
+                assert_eq!(query_info.get_filter_language(), Some("de-DE".to_string()));
+                
+                println!("✅ LoggedAlarms complex query parsed successfully with LIMIT and virtual columns");
+            }
+            SqlResult::SetStatement(_) => {
+                panic!("LoggedAlarms query incorrectly identified as SET statement");
+            }
+        }
+    }
+
+    #[test]
+    fn test_logged_alarms_optional_parameters() {
+        // Test that LoggedAlarms queries work with minimal parameters
+        let test_cases = [
+            // Query with no virtual columns - should generate minimal GraphQL request
+            ("SELECT name FROM loggedalarms", vec![]),
+            // Query with only modification_time - should only include time parameters
+            ("SELECT name FROM loggedalarms WHERE modification_time > '2024-01-01T00:00:00Z'", vec!["modification_time"]),
+            // Query with all parameters - should include all virtual columns
+            ("SELECT name FROM loggedalarms WHERE filterString = 'test' AND system_name = 'System1' AND filter_language = 'en-US'", 
+             vec!["filterString", "system_name", "filter_language"]),
+        ];
+        
+        for (sql, expected_columns) in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse LoggedAlarms query: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::Query(query_info) => {
+                    assert!(matches!(query_info.table, VirtualTable::LoggedAlarms), "Should identify as LoggedAlarms table");
+                    
+                    // Verify that the expected virtual columns are present
+                    for expected_col in &expected_columns {
+                        let has_filter = query_info.filters.iter().any(|f| f.column == *expected_col);
+                        assert!(has_filter, "Should have {} filter for query: {}", expected_col, sql);
+                    }
+                    
+                    // Test extraction methods return appropriate values
+                    let filter_string = query_info.get_filter_string();
+                    let system_names = query_info.get_system_names();
+                    let filter_language = query_info.get_filter_language();
+                    
+                    if expected_columns.contains(&"filterString") {
+                        assert!(filter_string.is_some(), "Should extract filterString");
+                    } else {
+                        assert!(filter_string.is_none(), "Should not extract filterString when not present");
+                    }
+                    
+                    if expected_columns.contains(&"system_name") {
+                        assert!(!system_names.is_empty(), "Should extract system_names");
+                    } else {
+                        assert!(system_names.is_empty(), "Should not extract system_names when not present");
+                    }
+                    
+                    if expected_columns.contains(&"filter_language") {
+                        assert!(filter_language.is_some(), "Should extract filter_language");
+                    } else {
+                        assert!(filter_language.is_none(), "Should not extract filter_language when not present");
+                    }
+                    
+                    println!("✅ LoggedAlarms optional parameters test passed for: '{}'", sql);
+                }
+                SqlResult::SetStatement(_) => {
+                    panic!("LoggedAlarms query incorrectly identified as SET statement: {}", sql);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_quality_column_in_tag_tables() {
+        // Test that TagValues and LoggedTagValues support quality column
+        let test_cases = [
+            ("SELECT tag_name, quality FROM tagvalues WHERE tag_name = 'Test'", VirtualTable::TagValues),
+            ("SELECT tag_name, timestamp, quality FROM loggedtagvalues WHERE tag_name = 'Test'", VirtualTable::LoggedTagValues),
+            ("SELECT quality, numeric_value FROM tagvalues WHERE tag_name = 'Test'", VirtualTable::TagValues),
+            ("SELECT * FROM loggedtagvalues WHERE tag_name = 'Test'", VirtualTable::LoggedTagValues), // Should include quality in *
+        ];
+        
+        for (sql, expected_table) in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse query with quality column: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::Query(query_info) => {
+                    match expected_table {
+                        VirtualTable::TagValues => assert!(matches!(query_info.table, VirtualTable::TagValues)),
+                        VirtualTable::LoggedTagValues => assert!(matches!(query_info.table, VirtualTable::LoggedTagValues)),
+                        _ => panic!("Unexpected table type in test"),
+                    }
+                    
+                    // Check that quality column is recognized
+                    let has_quality_column = query_info.columns.contains(&"quality".to_string()) || query_info.columns.contains(&"*".to_string());
+                    assert!(has_quality_column, "Should include quality column for query: {}", sql);
+                    
+                    println!("✅ Quality column test passed for: '{}'", sql);
+                }
+                SqlResult::SetStatement(_) => {
+                    panic!("Tag query incorrectly identified as SET statement: {}", sql);
+                }
+            }
+        }
+    }
 }
