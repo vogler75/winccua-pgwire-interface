@@ -1,6 +1,6 @@
 use crate::auth::AuthenticatedSession;
 use crate::sql_handler::SqlHandler;
-use crate::tables::{ColumnFilter, FilterOperator, FilterValue, QueryInfo, VirtualTable};
+use crate::tables::{ColumnFilter, FilterOperator, FilterValue, QueryInfo, SqlResult, VirtualTable};
 use anyhow::{anyhow, Result};
 use tracing::{debug, info, warn};
 use chrono::{DateTime, Utc};
@@ -12,8 +12,8 @@ impl QueryHandler {
         info!("🔍 Executing SQL query: {}", sql.trim());
         
         // Parse the SQL query
-        let query_info = match SqlHandler::parse_query(sql) {
-            Ok(info) => info,
+        let sql_result = match SqlHandler::parse_query(sql) {
+            Ok(result) => result,
             Err(e) => {
                 // Check if this is an unknown table error and log the SQL statement
                 let error_msg = e.to_string();
@@ -25,15 +25,25 @@ impl QueryHandler {
                 return Err(e);
             }
         };
-        debug!("📋 Parsed query: {:?}", query_info);
+        debug!("📋 Parsed SQL result: {:?}", sql_result);
         
-        // Execute based on table type
-        match query_info.table {
-            VirtualTable::TagValues => Self::execute_tag_values_query(&query_info, session).await,
-            VirtualTable::LoggedTagValues => Self::execute_logged_tag_values_query(&query_info, session).await,
-            VirtualTable::ActiveAlarms => Self::execute_active_alarms_query(&query_info, session).await,
-            VirtualTable::LoggedAlarms => Self::execute_logged_alarms_query(&query_info, session).await,
-            VirtualTable::TagList => Self::execute_tag_list_query(&query_info, session).await,
+        // Handle based on result type
+        match sql_result {
+            SqlResult::Query(query_info) => {
+                // Execute based on table type
+                match query_info.table {
+                    VirtualTable::TagValues => Self::execute_tag_values_query(&query_info, session).await,
+                    VirtualTable::LoggedTagValues => Self::execute_logged_tag_values_query(&query_info, session).await,
+                    VirtualTable::ActiveAlarms => Self::execute_active_alarms_query(&query_info, session).await,
+                    VirtualTable::LoggedAlarms => Self::execute_logged_alarms_query(&query_info, session).await,
+                    VirtualTable::TagList => Self::execute_tag_list_query(&query_info, session).await,
+                }
+            }
+            SqlResult::SetStatement(set_command) => {
+                info!("✅ Successfully executed SET statement: {}", set_command);
+                // Return a command complete response for SET statements
+                Ok("COMMAND_COMPLETE:SET".to_string())
+            }
         }
     }
     

@@ -1030,7 +1030,7 @@ async fn handle_parse_message(payload: &[u8], connection_state: &mut ConnectionS
     
     // Validate the SQL query using the same parser as the query handler
     match crate::sql_handler::SqlHandler::parse_query(&query) {
-        Ok(_query_info) => {
+        Ok(_sql_result) => {
             // Query is valid, store the prepared statement
             let prepared_stmt = PreparedStatement {
                 name: statement_name.clone(),
@@ -1261,6 +1261,12 @@ async fn handle_simple_query(query: &str, session: &crate::auth::AuthenticatedSe
     // Handle other utility statements
     if is_utility_statement(&trimmed_query) {
         info!("🔧 Utility statement: {}", query.trim());
+        
+        // Check if this is a SET statement - if so, use QueryHandler for proper parsing
+        if trimmed_query.starts_with("SET ") {
+            info!("🔧 SET statement detected, routing to QueryHandler: {}", query.trim());
+            return crate::query_handler::QueryHandler::execute_query(query, session).await;
+        }
         
         // Handle SELECT statements with actual data (CSV format: header line, then data lines)
         // Remove trailing semicolons for comparison

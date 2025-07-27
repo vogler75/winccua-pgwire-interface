@@ -173,6 +173,12 @@ impl FilterValue {
 }
 
 #[derive(Debug, Clone)]
+pub enum SqlResult {
+    Query(QueryInfo),
+    SetStatement(String), // Contains the SET command that was executed
+}
+
+#[derive(Debug, Clone)]
 pub struct QueryInfo {
     pub table: VirtualTable,
     pub columns: Vec<String>,

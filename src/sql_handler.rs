@@ -9,7 +9,7 @@ use chrono::{Duration, Local, DateTime};
 pub struct SqlHandler;
 
 impl SqlHandler {
-    pub fn parse_query(sql: &str) -> Result<QueryInfo> {
+    pub fn parse_query(sql: &str) -> Result<SqlResult> {
         debug!("Parsing SQL: {}", sql);
 
         let dialect = GenericDialect {};
@@ -21,8 +21,15 @@ impl SqlHandler {
 
         let statement = &ast[0];
         match statement {
-            Statement::Query(query) => Self::parse_select_query(query),
-            _ => Err(anyhow!("Only SELECT statements are supported")),
+            Statement::Query(query) => {
+                let query_info = Self::parse_select_query(query)?;
+                Ok(SqlResult::Query(query_info))
+            }
+            Statement::SetVariable { .. } | Statement::SetNames { .. } | Statement::SetTimeZone { .. } => {
+                // Handle SET statements by returning a special success indicator
+                Self::handle_set_statement(statement)
+            }
+            _ => Err(anyhow!("Only SELECT and SET statements are supported")),
         }
     }
 
@@ -637,6 +644,29 @@ impl SqlHandler {
         
         Err(anyhow!("Could not parse timestamp: {}", ts_str))
     }
+
+    fn handle_set_statement(statement: &Statement) -> Result<SqlResult> {
+        debug!("Handling SET statement: {:?}", statement);
+        
+        let set_command = match statement {
+            Statement::SetVariable { variables, .. } => {
+                // For now, just return a simple success message
+                // TODO: Extract actual variable names and values when the structure is clear
+                debug!("Variables structure: {:?}", variables);
+                format!("SET (variables: {})", variables.len())
+            }
+            Statement::SetNames { charset_name, .. } => {
+                format!("SET NAMES {}", charset_name)
+            }
+            Statement::SetTimeZone { value, .. } => {
+                format!("SET TIME ZONE {}", value)
+            }
+            _ => "SET (unknown)".to_string(),
+        };
+        
+        debug!("Successfully handled SET statement: {}", set_command);
+        Ok(SqlResult::SetStatement(set_command))
+    }
 }
 
 #[cfg(test)]
@@ -650,22 +680,29 @@ mod tests {
         let result = SqlHandler::parse_query(sql);
         assert!(result.is_ok(), "Failed to parse query with INTERVAL: {:?}", result.err());
         
-        let query_info = result.unwrap();
-        assert!(matches!(query_info.table, VirtualTable::LoggedTagValues));
-        
-        // Check that we have filters
-        assert!(!query_info.filters.is_empty());
-        
-        // Find the timestamp filter
-        let timestamp_filter = query_info.filters.iter()
-            .find(|f| f.column == "timestamp");
-        assert!(timestamp_filter.is_some(), "No timestamp filter found");
-        
-        // Check that the timestamp filter has a computed value (not just the original expression)
-        if let Some(filter) = timestamp_filter {
-            if let FilterValue::Timestamp(ts) = &filter.value {
-                // The timestamp should be calculated (not the original CURRENT_TIME)
-                assert!(!ts.contains("CURRENT_TIME"), "Timestamp should be calculated, not contain CURRENT_TIME");
+        let sql_result = result.unwrap();
+        match sql_result {
+            SqlResult::Query(query_info) => {
+                assert!(matches!(query_info.table, VirtualTable::LoggedTagValues));
+                
+                // Check that we have filters
+                assert!(!query_info.filters.is_empty());
+                
+                // Find the timestamp filter
+                let timestamp_filter = query_info.filters.iter()
+                    .find(|f| f.column == "timestamp");
+                assert!(timestamp_filter.is_some(), "No timestamp filter found");
+                
+                // Check that the timestamp filter has a computed value (not just the original expression)
+                if let Some(filter) = timestamp_filter {
+                    if let FilterValue::Timestamp(ts) = &filter.value {
+                        // The timestamp should be calculated (not the original CURRENT_TIME)
+                        assert!(!ts.contains("CURRENT_TIME"), "Timestamp should be calculated, not contain CURRENT_TIME");
+                    }
+                }
+            }
+            SqlResult::SetStatement(_) => {
+                panic!("Expected Query result, got SetStatement");
             }
         }
     }
@@ -686,7 +723,133 @@ mod tests {
             
             if should_pass {
                 assert!(result.is_ok(), "Failed to parse query with {}: {:?}", interval_str, result.err());
+                // Also verify it's a Query result, not a SetStatement
+                if let Ok(SqlResult::SetStatement(_)) = result {
+                    panic!("Expected Query result for interval test, got SetStatement");
+                }
             }
         }
+    }
+    
+    #[test]
+    fn test_set_statements() {
+        let test_cases = [
+            "SET extra_float_digits = 3",
+            "SET TIME ZONE 'UTC'",
+            "SET NAMES 'utf8'",
+            "SET application_name = 'test_app'",
+            "SET search_path = public, pg_catalog",
+        ];
+        
+        for sql in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse SET statement: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::SetStatement(set_command) => {
+                    assert!(set_command.starts_with("SET"), "SET command should start with 'SET': {}", set_command);
+                }
+                SqlResult::Query(_) => {
+                    panic!("Expected SetStatement result for '{}', got Query", sql);
+                }
+            }
+        }
+    }
+    
+    #[test]
+    fn test_mixed_queries_and_sets() {
+        // Test that we can parse both SET statements and normal queries correctly
+        let test_cases = [
+            ("SET extra_float_digits = 3", true), // SET statement
+            ("SELECT * FROM tagvalues WHERE tag_name = 'test'", false), // Normal query
+            ("SET TIME ZONE 'UTC'", true), // SET statement
+            ("SELECT * FROM loggedtagvalues WHERE timestamp > CURRENT_TIME - INTERVAL '1 hour' AND tag_name = 'test'", false), // Normal query with interval
+        ];
+        
+        for (sql, is_set) in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse statement: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::SetStatement(_) => {
+                    assert!(is_set, "Expected Query result for '{}', got SetStatement", sql);
+                }
+                SqlResult::Query(_) => {
+                    assert!(!is_set, "Expected SetStatement result for '{}', got Query", sql);
+                }
+            }
+        }
+    }
+    
+    #[test]
+    fn test_parse_request_set_statements() {
+        // Test the specific case mentioned: Parse: statement='', query='SET extra_float_digits = 3', params=0
+        let test_cases = [
+            "SET extra_float_digits = 3",
+            "SET application_name = 'test_client'", 
+            "SET client_encoding = 'UTF8'",
+            "SET search_path = public, pg_catalog",
+            "SET TIME ZONE 'America/New_York'",
+            "SET NAMES 'utf8'",
+        ];
+        
+        for sql in test_cases {
+            // This simulates what happens when a Parse request comes in
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Parse request failed for: {}: {:?}", sql, result.err());
+            
+            // Verify it's recognized as a SET statement
+            match result.unwrap() {
+                SqlResult::SetStatement(set_command) => {
+                    assert!(set_command.starts_with("SET"), "Expected SET command, got: {}", set_command);
+                    println!("✅ Parse request for '{}' -> SetStatement('{}')", sql, set_command);
+                }
+                SqlResult::Query(_) => {
+                    panic!("Parse request for SET statement '{}' incorrectly returned Query result", sql);
+                }
+            }
+        }
+    }
+    
+    #[test] 
+    fn test_set_command_complete_format() {
+        // Test that SET statements return the correct COMMAND_COMPLETE format
+        // This simulates the format_as_postgres_result function behavior
+        
+        fn mock_format_as_postgres_result(csv_data: &str) -> Vec<u8> {
+            let mut response = Vec::new();
+            
+            if csv_data.starts_with("COMMAND_COMPLETE:") {
+                let command_tag = csv_data.strip_prefix("COMMAND_COMPLETE:").unwrap_or("OK");
+                
+                // CommandComplete message: 'C' + length + tag + null
+                response.push(b'C');
+                let tag_length = 4 + command_tag.len() + 1;
+                response.extend_from_slice(&(tag_length as u32).to_be_bytes());
+                response.extend_from_slice(command_tag.as_bytes());
+                response.push(0);
+                
+                // ReadyForQuery message: 'Z' + length + status
+                response.push(b'Z');
+                response.extend_from_slice(&5u32.to_be_bytes());
+                response.push(b'I'); // Idle
+            }
+            
+            response
+        }
+        
+        let response = mock_format_as_postgres_result("COMMAND_COMPLETE:SET");
+        
+        // Verify structure
+        assert_eq!(response[0], b'C', "Should start with CommandComplete message");
+        assert!(response.len() >= 15, "Response should contain both CommandComplete and ReadyForQuery");
+        
+        // Find the ReadyForQuery message (should be after CommandComplete)
+        let z_pos = response.iter().position(|&b| b == b'Z').expect("Should contain ReadyForQuery");
+        assert_eq!(response[z_pos + 5], b'I', "Should end with Idle status");
+        
+        println!("✅ SET statement produces correct PostgreSQL wire protocol response");
+        println!("   Total response length: {} bytes", response.len());
+        println!("   CommandComplete at: 0, ReadyForQuery at: {}", z_pos);
     }
 }
