@@ -3,6 +3,7 @@ use crate::sql_handler::SqlHandler;
 use crate::tables::{ColumnFilter, FilterOperator, FilterValue, QueryInfo, VirtualTable};
 use anyhow::{anyhow, Result};
 use tracing::{debug, info, warn};
+use chrono::{DateTime, Utc};
 
 pub struct QueryHandler;
 
@@ -552,6 +553,69 @@ impl QueryHandler {
         }
     }
     
+    fn convert_timestamp_to_ms_epoch(timestamp_str: &str) -> String {
+        // Try to parse the timestamp string and convert to milliseconds since epoch
+        // First try parsing as ISO 8601 format (most common)
+        if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp_str) {
+            return dt.timestamp_millis().to_string();
+        }
+        
+        // Try parsing without timezone (assume UTC)
+        if let Ok(dt) = timestamp_str.parse::<DateTime<Utc>>() {
+            return dt.timestamp_millis().to_string();
+        }
+        
+        // If parsing fails, try some common formats
+        for format in &[
+            "%Y-%m-%dT%H:%M:%S%.fZ",
+            "%Y-%m-%dT%H:%M:%SZ", 
+            "%Y-%m-%d %H:%M:%S%.f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S%.f%z",
+            "%Y-%m-%dT%H:%M:%S%z"
+        ] {
+            if let Ok(dt) = DateTime::parse_from_str(timestamp_str, format) {
+                return dt.timestamp_millis().to_string();
+            }
+        }
+        
+        // If all parsing attempts fail, return 0
+        warn!("Failed to parse timestamp '{}' for ms conversion, using 0", timestamp_str);
+        "0".to_string()
+    }
+
+    fn convert_timestamp_to_postgres_format(timestamp_str: &str) -> String {
+        // Try to parse the timestamp string and convert to PostgreSQL format
+        // First try parsing as ISO 8601 format (most common)
+        if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp_str) {
+            // Convert to UTC and format for PostgreSQL
+            return dt.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S%.6f%z").to_string();
+        }
+        
+        // Try parsing without timezone (assume UTC)
+        if let Ok(dt) = timestamp_str.parse::<DateTime<Utc>>() {
+            return dt.format("%Y-%m-%d %H:%M:%S%.6f%z").to_string();
+        }
+        
+        // If parsing fails, try some common formats
+        for format in &[
+            "%Y-%m-%dT%H:%M:%S%.fZ",
+            "%Y-%m-%dT%H:%M:%SZ", 
+            "%Y-%m-%d %H:%M:%S%.f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S%.f%z",
+            "%Y-%m-%dT%H:%M:%S%z"
+        ] {
+            if let Ok(dt) = DateTime::parse_from_str(timestamp_str, format) {
+                return dt.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S%.6f%z").to_string();
+            }
+        }
+        
+        // If all parsing attempts fail, return the original string
+        warn!("Failed to parse timestamp '{}', using as-is", timestamp_str);
+        timestamp_str.to_string()
+    }
+
     fn create_csv_header(columns: &[String]) -> String {
         format!("{}\n", columns.join(","))
     }
@@ -579,11 +643,21 @@ impl QueryHandler {
                 for column in &query_info.columns {
                     let cell_value = match column.as_str() {
                         "tag_name" => result.name.clone(),
-                        "timestamp" => value.timestamp.clone(),
+                        "timestamp" => Self::convert_timestamp_to_postgres_format(&value.timestamp),
+                        "timestamp_ms" => Self::convert_timestamp_to_ms_epoch(&value.timestamp),
                         "numeric_value" => {
                             value.value.as_ref()
                                 .and_then(|v| v.as_f64())
-                                .map(|n| n.to_string())
+                                .map(|n| {
+                                    // Format numeric values appropriately
+                                    if n.fract() == 0.0 {
+                                        // Whole number - format as integer
+                                        format!("{}", n as i64)
+                                    } else {
+                                        // Decimal number - use appropriate precision
+                                        format!("{}", n)
+                                    }
+                                })
                                 .unwrap_or_else(|| "NULL".to_string())
                         }
                         "string_value" => {
@@ -636,11 +710,21 @@ impl QueryHandler {
             for column in &query_info.columns {
                 let cell_value = match column.as_str() {
                     "tag_name" => result.tag_name.clone(),
-                    "timestamp" => result.timestamp.clone(),
+                    "timestamp" => Self::convert_timestamp_to_postgres_format(&result.timestamp),
+                    "timestamp_ms" => Self::convert_timestamp_to_ms_epoch(&result.timestamp),
                     "numeric_value" => {
                         result.value.as_ref()
                             .and_then(|v| v.as_f64())
-                            .map(|n| n.to_string())
+                            .map(|n| {
+                                // Format numeric values appropriately
+                                if n.fract() == 0.0 {
+                                    // Whole number - format as integer
+                                    format!("{}", n as i64)
+                                } else {
+                                    // Decimal number - use appropriate precision
+                                    format!("{}", n)
+                                }
+                            })
                             .unwrap_or_else(|| "NULL".to_string())
                     }
                     "string_value" => {
@@ -675,11 +759,17 @@ impl QueryHandler {
                     "name" => result.name.clone(),
                     "instance_id" => result.instance_id.to_string(),
                     "alarm_group_id" => result.alarm_group_id.map(|v| v.to_string()).unwrap_or_else(|| "NULL".to_string()),
-                    "raise_time" => result.raise_time.clone(),
-                    "acknowledgment_time" => result.acknowledgment_time.as_ref().cloned().unwrap_or_else(|| "NULL".to_string()),
-                    "clear_time" => result.clear_time.as_ref().cloned().unwrap_or_else(|| "NULL".to_string()),
-                    "reset_time" => result.reset_time.as_ref().cloned().unwrap_or_else(|| "NULL".to_string()),
-                    "modification_time" => result.modification_time.clone(),
+                    "raise_time" => Self::convert_timestamp_to_postgres_format(&result.raise_time),
+                    "acknowledgment_time" => result.acknowledgment_time.as_ref()
+                        .map(|t| Self::convert_timestamp_to_postgres_format(t))
+                        .unwrap_or_else(|| "NULL".to_string()),
+                    "clear_time" => result.clear_time.as_ref()
+                        .map(|t| Self::convert_timestamp_to_postgres_format(t))
+                        .unwrap_or_else(|| "NULL".to_string()),
+                    "reset_time" => result.reset_time.as_ref()
+                        .map(|t| Self::convert_timestamp_to_postgres_format(t))
+                        .unwrap_or_else(|| "NULL".to_string()),
+                    "modification_time" => Self::convert_timestamp_to_postgres_format(&result.modification_time),
                     "state" => result.state.clone(),
                     "priority" => result.priority.map(|v| v.to_string()).unwrap_or_else(|| "NULL".to_string()),
                     "event_text" => result.event_text.as_ref().map(|v| v.join(";")).unwrap_or_else(|| "NULL".to_string()),
@@ -715,11 +805,17 @@ impl QueryHandler {
                     "name" => result.name.clone(),
                     "instance_id" => result.instance_id.to_string(),
                     "alarm_group_id" => result.alarm_group_id.map(|v| v.to_string()).unwrap_or_else(|| "NULL".to_string()),
-                    "raise_time" => result.raise_time.clone(),
-                    "acknowledgment_time" => result.acknowledgment_time.as_ref().cloned().unwrap_or_else(|| "NULL".to_string()),
-                    "clear_time" => result.clear_time.as_ref().cloned().unwrap_or_else(|| "NULL".to_string()),
-                    "reset_time" => result.reset_time.as_ref().cloned().unwrap_or_else(|| "NULL".to_string()),
-                    "modification_time" => result.modification_time.clone(),
+                    "raise_time" => Self::convert_timestamp_to_postgres_format(&result.raise_time),
+                    "acknowledgment_time" => result.acknowledgment_time.as_ref()
+                        .map(|t| Self::convert_timestamp_to_postgres_format(t))
+                        .unwrap_or_else(|| "NULL".to_string()),
+                    "clear_time" => result.clear_time.as_ref()
+                        .map(|t| Self::convert_timestamp_to_postgres_format(t))
+                        .unwrap_or_else(|| "NULL".to_string()),
+                    "reset_time" => result.reset_time.as_ref()
+                        .map(|t| Self::convert_timestamp_to_postgres_format(t))
+                        .unwrap_or_else(|| "NULL".to_string()),
+                    "modification_time" => Self::convert_timestamp_to_postgres_format(&result.modification_time),
                     "state" => result.state.clone(),
                     "priority" => result.priority.map(|v| v.to_string()).unwrap_or_else(|| "NULL".to_string()),
                     "event_text" => result.event_text.as_ref().map(|v| v.join(";")).unwrap_or_else(|| "NULL".to_string()),

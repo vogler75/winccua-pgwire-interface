@@ -1961,7 +1961,15 @@ fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
         row_desc.push(0); // Null terminator for field name
         row_desc.extend_from_slice(&0u32.to_be_bytes()); // Table OID
         row_desc.extend_from_slice(&0i16.to_be_bytes());  // Column attribute number
-        row_desc.extend_from_slice(&25u32.to_be_bytes()); // Type OID (25 = text)
+        
+        // Use appropriate type OID based on column name
+        let type_oid = match header.trim() {
+            "numeric_value" | "timestamp_ms" => 1700u32, // NUMERIC type
+            "timestamp" => 1184u32,     // TIMESTAMPTZ type
+            _ => 25u32,                 // TEXT type (default)
+        };
+        row_desc.extend_from_slice(&type_oid.to_be_bytes()); // Type OID
+        
         row_desc.extend_from_slice(&(-1i16).to_be_bytes()); // Type size (-1 = variable)
         row_desc.extend_from_slice(&(-1i32).to_be_bytes()); // Type modifier
         row_desc.extend_from_slice(&0i16.to_be_bytes());   // Format code (0 = text)
