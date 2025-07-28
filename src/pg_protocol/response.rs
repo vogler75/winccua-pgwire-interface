@@ -477,7 +477,7 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
         
         for (col_idx, value) in row.iter().enumerate() {
             // Get the column type to determine format
-            let type_oid = if col_idx < result.column_types.len() {
+            let _type_oid = if col_idx < result.column_types.len() {
                 result.column_types[col_idx]
             } else {
                 25 // TEXT
@@ -555,7 +555,7 @@ pub(super) fn format_query_result_as_extended_query_result(result: &crate::query
         
         for (col_idx, value) in row.iter().enumerate() {
             // Get the column type to determine format
-            let type_oid = if col_idx < result.column_types.len() {
+            let _type_oid = if col_idx < result.column_types.len() {
                 result.column_types[col_idx]
             } else {
                 25 // TEXT
