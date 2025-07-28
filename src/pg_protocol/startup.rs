@@ -15,7 +15,6 @@ pub(super) async fn handle_postgres_startup(
     mut socket: TcpStream,
     session_manager: Arc<SessionManager>,
     data: &[u8],
-    no_auth_config: Option<(String, String)>,
 ) -> Result<()> {
     let peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
     info!("🐘 Handling PostgreSQL startup from {}", peer_addr);
@@ -152,102 +151,6 @@ pub(super) async fn handle_postgres_startup(
             peer_addr, username
         );
 
-        // Check if no-auth mode is enabled
-        if let Some((no_auth_username, no_auth_password)) = &no_auth_config {
-            info!(
-                "🔓 No-auth mode: bypassing PostgreSQL authentication for client {}",
-                peer_addr
-            );
-            info!(
-                "🔓 Using configured credentials: username='{}' for GraphQL authentication",
-                no_auth_username
-            );
-
-            // Skip PostgreSQL authentication and directly authenticate with GraphQL
-            let authenticated_session =
-                match session_manager.authenticate(no_auth_username, no_auth_password).await {
-                    Ok(session) => {
-                        info!("✅ No-auth GraphQL authentication successful for configured user '{}' from {}", no_auth_username, peer_addr);
-
-                        // Send authentication OK response immediately
-                        let auth_ok_response = create_postgres_auth_ok_response();
-                        debug!(
-                            "📤 Sending authentication OK to {} (no-auth mode)",
-                            peer_addr
-                        );
-                        if let Err(e) = socket.write_all(&auth_ok_response).await {
-                            error!("❌ Failed to send auth OK to {}: {}", peer_addr, e);
-                            return Ok(());
-                        }
-
-                        session
-                    }
-                    Err(e) => {
-                        error!("❌ No-auth GraphQL authentication failed for user '{}' from {}: {}", no_auth_username, peer_addr, e);
-                        let error_response = create_postgres_error_response(
-                            "28P01",
-                            &format!("GraphQL authentication failed: {}", e),
-                        );
-                        socket.write_all(&error_response).await?;
-                        return Ok(());
-                    }
-                };
-
-            // Skip to query processing loop
-            info!(
-                "🔄 Starting PostgreSQL query loop for {} (no-auth mode)",
-                peer_addr
-            );
-            let mut buffer = [0; 4096];
-
-            loop {
-                debug!("📖 Waiting for PostgreSQL query from {}", peer_addr);
-
-                let n = socket.read(&mut buffer).await?;
-                if n == 0 {
-                    info!("🔌 PostgreSQL connection closed by client {}", peer_addr);
-                    break;
-                }
-
-                debug!(
-                    "📊 Received {} bytes from PostgreSQL client {}",
-                    n, peer_addr
-                );
-
-                // Handle PostgreSQL messages (both Simple and Extended Query Protocol)
-                match handle_postgres_message(&buffer[..n], &mut connection_state, &authenticated_session).await {
-                    Ok(response) => {
-                        if !response.is_empty() {
-                            debug!("📤 Sending PostgreSQL response to {} ({} bytes)", peer_addr, response.len());
-                            socket.write_all(&response).await?;
-                        }
-                    }
-                    Err(e) => {
-                        // Check if this is a terminate request
-                        if e.to_string() == "TERMINATE_CONNECTION" {
-                            info!("👋 Client {} requested connection termination (no-auth mode)", peer_addr);
-                            break; // Exit the query loop gracefully
-                        } else if e.to_string() == "INCOMPLETE_MESSAGE" {
-                            // Incomplete message is normal, just continue waiting for more data
-                            debug!("📨 Incomplete message from {}, waiting for more data", peer_addr);
-                            continue;
-                        } else {
-                            error!("❌ Message processing error for {}: {}", peer_addr, e);
-                            let mut error_response = create_postgres_error_response("42000", &format!("Query failed: {}", e));
-
-                            // Add ready-for-query message after error to prevent client hang
-                            error_response.push(b'Z');
-                            error_response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
-                            error_response.push(b'I'); // Status: 'I' = idle
-
-                            socket.write_all(&error_response).await?;
-                        }
-                    }
-                }
-            }
-
-            return Ok(());
-        }
 
         // Normal authentication flow
         // Choose authentication method:

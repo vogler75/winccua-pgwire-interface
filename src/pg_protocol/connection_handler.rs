@@ -10,7 +10,6 @@ use super::startup::handle_postgres_startup;
 pub(super) async fn handle_connection(
     mut socket: TcpStream,
     session_manager: Arc<SessionManager>,
-    no_auth_config: Option<(String, String)>,
 ) -> Result<()> {
     let peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
     info!("🔌 New connection established from {}", peer_addr);
@@ -75,7 +74,6 @@ pub(super) async fn handle_connection(
             socket,
             session_manager,
             &startup_buffer[..startup_n],
-            no_auth_config,
         )
         .await;
     }
@@ -84,7 +82,7 @@ pub(super) async fn handle_connection(
         warn!("🐘 PostgreSQL wire protocol detected from {}!", peer_addr);
 
         // For now, attempt to handle it as PostgreSQL startup
-        return handle_postgres_startup(socket, session_manager, &peek_buffer[..n], no_auth_config)
+        return handle_postgres_startup(socket, session_manager, &peek_buffer[..n])
             .await;
     }
 
@@ -99,7 +97,6 @@ pub(super) async fn handle_connection(
             socket,
             session_manager,
             initial_data.to_string(),
-            no_auth_config,
         )
         .await;
     }
@@ -125,7 +122,7 @@ pub(super) async fn handle_connection(
                         debug!("📄 Full data as text: {:?}", full_data);
 
                         if full_data.contains(':') {
-                            return handle_simple_text_protocol(socket, session_manager, full_data.to_string(), no_auth_config).await;
+                            return handle_simple_text_protocol(socket, session_manager, full_data.to_string()).await;
                         }
                     }
                 }
@@ -192,7 +189,6 @@ async fn handle_simple_text_protocol(
     mut socket: TcpStream,
     session_manager: Arc<SessionManager>,
     initial_data: String,
-    _no_auth_config: Option<(String, String)>,
 ) -> Result<()> {
     let peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
     info!("📝 Using simple text protocol with {}", peer_addr);

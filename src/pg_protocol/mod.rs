@@ -66,14 +66,12 @@ pub(super) struct ScramSha256Context {
 
 pub struct PgProtocolServer {
     session_manager: Arc<SessionManager>,
-    no_auth_config: Option<(String, String)>, // (username, password) for no-auth mode
 }
 
 impl PgProtocolServer {
-    pub fn new(graphql_url: String, no_auth_config: Option<(String, String)>) -> Self {
+    pub fn new(graphql_url: String) -> Self {
         Self {
             session_manager: Arc::new(SessionManager::new(graphql_url)),
-            no_auth_config,
         }
     }
 
@@ -88,12 +86,11 @@ impl PgProtocolServer {
             info!("🌟 Accepted new connection from {}", client_addr);
 
             let session_manager = self.session_manager.clone();
-            let no_auth_config = self.no_auth_config.clone();
             tokio::spawn(async move {
                 debug!("🚀 Starting connection handler for {}", client_addr);
 
                 if let Err(e) =
-                    connection_handler::handle_connection(socket, session_manager, no_auth_config)
+                    connection_handler::handle_connection(socket, session_manager)
                         .await
                 {
                     error!("💥 Error handling connection from {}: {}", client_addr, e);

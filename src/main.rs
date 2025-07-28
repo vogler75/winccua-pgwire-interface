@@ -31,14 +31,6 @@ pub struct Args {
     /// Use PostgreSQL wire protocol (default) instead of simple TCP protocol
     #[arg(long, default_value_t = true)]
     pub pgwire: bool,
-
-    /// Skip PostgreSQL authentication and use provided username for GraphQL
-    #[arg(long)]
-    pub no_auth_username: Option<String>,
-
-    /// Skip PostgreSQL authentication and use provided password for GraphQL
-    #[arg(long)]
-    pub no_auth_password: Option<String>,
 }
 
 #[tokio::main]
@@ -83,27 +75,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Check if no-auth mode is enabled
-    let no_auth_config = if let (Some(username), Some(password)) =
-        (&args.no_auth_username, &args.no_auth_password)
-    {
-        info!(
-            "🔓 No-auth mode enabled: using username '{}' for all connections",
-            username
-        );
-        Some((username.clone(), password.clone()))
-    } else if args.no_auth_username.is_some() || args.no_auth_password.is_some() {
-        return Err(anyhow::anyhow!(
-            "Both --no-auth-username and --no-auth-password must be provided together"
-        ));
-    } else {
-        None
-    };
 
     // For now, always use the simple server with improved PostgreSQL compatibility
     // The pgwire library API is too complex and has changed significantly
     info!("🐘 Starting PostgreSQL-compatible server (enhanced simple protocol)");
-    let server = pg_protocol::PgProtocolServer::new(graphql_url, no_auth_config);
+    let server = pg_protocol::PgProtocolServer::new(graphql_url);
     server.start(args.bind_addr).await?;
 
     Ok(())
