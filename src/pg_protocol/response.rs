@@ -352,8 +352,16 @@ pub(super) fn create_row_description_response(query_info: &crate::tables::QueryI
         fields_data.extend_from_slice(&0u32.to_be_bytes()); // Table OID
         fields_data.extend_from_slice(&(i as u16).to_be_bytes()); // Column index
 
-        // Determine data type OID based on column name/type hint
-        let type_oid: u32 = 25; // Default to TEXT
+        // Get the proper PostgreSQL OID from the table schema
+        let type_oid: u32 = {
+            let schema = query_info.table.get_schema();
+            // Find the column in the schema
+            if let Some((_, pgwire_type)) = schema.iter().find(|(col_name, _)| col_name.to_lowercase() == header.to_lowercase()) {
+                pgwire_type.oid()
+            } else {
+                25 // TEXT default for unknown columns
+            }
+        };
         tracing::info!("🚀 create_row_description_response: Column '{}' -> PostgreSQL OID {} ({})", 
             header, type_oid, postgres_type_name(type_oid));
         fields_data.extend_from_slice(&type_oid.to_be_bytes()); // Data type OID
@@ -629,6 +637,7 @@ fn postgres_type_name(oid: u32) -> &'static str {
         700 => "float4",
         701 => "float8", 
         1114 => "timestamp",
+        1700 => "numeric",
         _ => "unknown",
     }
 }
