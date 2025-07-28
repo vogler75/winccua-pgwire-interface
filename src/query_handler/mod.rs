@@ -57,6 +57,7 @@ impl QueryResult {
     }
     
     /// Get the number of rows
+    #[allow(dead_code)]
     pub fn row_count(&self) -> usize {
         self.rows.len()
     }
@@ -239,10 +240,10 @@ impl QueryHandler {
                             .await
                     }
                     VirtualTable::ActiveAlarms => {
-                        Self::execute_active_alarms_query(&query_info, session).await
+                        Self::execute_active_alarms_datafusion_query(sql, &query_info, session).await
                     }
                     VirtualTable::LoggedAlarms => {
-                        Self::execute_logged_alarms_query(&query_info, session).await
+                        Self::execute_logged_alarms_datafusion_query(sql, &query_info, session).await
                     }
                     VirtualTable::TagList => {
                         Self::execute_taglist_datafusion_query(sql, &query_info, session).await
@@ -470,7 +471,7 @@ impl QueryHandler {
 
     async fn execute_from_less_query(
         sql: &str,
-        query_info: &QueryInfo, 
+        _query_info: &QueryInfo, 
         session: &AuthenticatedSession,
     ) -> Result<QueryResult> {
         info!("🔍 Executing FROM-less query: {}", sql.trim());
@@ -492,5 +493,294 @@ impl QueryHandler {
         
         // Convert the results to QueryResult
         QueryResult::from_record_batches(batches)
+    }
+
+    async fn execute_active_alarms_datafusion_query(
+        sql: &str,
+        query_info: &QueryInfo,
+        session: &AuthenticatedSession,
+    ) -> Result<QueryResult> {
+        let results = Self::fetch_active_alarms_data(query_info, session).await?;
+
+        // Define the schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("instance_id", DataType::Int64, false),
+            Field::new("alarm_group_id", DataType::Int64, true),
+            Field::new("raise_time", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new("acknowledgment_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("clear_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("reset_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("modification_time", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new("state", DataType::Utf8, false),
+            Field::new("priority", DataType::Int64, true),
+            Field::new("event_text", DataType::Utf8, true),
+            Field::new("info_text", DataType::Utf8, true),
+            Field::new("origin", DataType::Utf8, true),
+            Field::new("area", DataType::Utf8, true),
+            Field::new("value", DataType::Utf8, true),
+            Field::new("host_name", DataType::Utf8, true),
+            Field::new("user_name", DataType::Utf8, true),
+        ]));
+
+        // Create columns from the results
+        let (
+            names,
+            instance_ids,
+            alarm_group_ids,
+            raise_times,
+            acknowledgment_times,
+            clear_times,
+            reset_times,
+            modification_times,
+            states,
+            priorities,
+            event_texts,
+            info_texts,
+            origins,
+            areas,
+            values,
+            host_names,
+            user_names,
+        ) = results.into_iter().fold(
+            (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            |mut acc, result| {
+                acc.0.push(result.name);
+                acc.1.push(result.instance_id as i64);
+                acc.2.push(result.alarm_group_id.map(|id| id as i64));
+                
+                let raise_time_nanos = chrono::DateTime::parse_from_rfc3339(&result.raise_time)
+                    .map(|dt| dt.timestamp_nanos_opt())
+                    .unwrap_or_default();
+                acc.3.push(raise_time_nanos);
+                
+                let ack_time_nanos = result.acknowledgment_time.as_ref()
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .and_then(|dt| dt.timestamp_nanos_opt());
+                acc.4.push(ack_time_nanos);
+                
+                let clear_time_nanos = result.clear_time.as_ref()
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .and_then(|dt| dt.timestamp_nanos_opt());
+                acc.5.push(clear_time_nanos);
+                
+                let reset_time_nanos = result.reset_time.as_ref()
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .and_then(|dt| dt.timestamp_nanos_opt());
+                acc.6.push(reset_time_nanos);
+                
+                let modification_time_nanos = chrono::DateTime::parse_from_rfc3339(&result.modification_time)
+                    .map(|dt| dt.timestamp_nanos_opt())
+                    .unwrap_or_default();
+                acc.7.push(modification_time_nanos);
+                
+                acc.8.push(result.state);
+                acc.9.push(result.priority.map(|p| p as i64));
+                acc.10.push(result.event_text.map(|v| v.join(";")));
+                acc.11.push(result.info_text.map(|v| v.join(";")));
+                acc.12.push(result.origin);
+                acc.13.push(result.area);
+                acc.14.push(result.value.map(|v| v.to_string()));
+                acc.15.push(result.host_name);
+                acc.16.push(result.user_name);
+                acc
+            },
+        );
+
+        // Create a RecordBatch
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(names)),
+                Arc::new(Int64Array::from(instance_ids)),
+                Arc::new(Int64Array::from(alarm_group_ids)),
+                Arc::new(TimestampNanosecondArray::from(raise_times)),
+                Arc::new(TimestampNanosecondArray::from(acknowledgment_times)),
+                Arc::new(TimestampNanosecondArray::from(clear_times)),
+                Arc::new(TimestampNanosecondArray::from(reset_times)),
+                Arc::new(TimestampNanosecondArray::from(modification_times)),
+                Arc::new(StringArray::from(states)),
+                Arc::new(Int64Array::from(priorities)),
+                Arc::new(StringArray::from(event_texts)),
+                Arc::new(StringArray::from(info_texts)),
+                Arc::new(StringArray::from(origins)),
+                Arc::new(StringArray::from(areas)),
+                Arc::new(StringArray::from(values)),
+                Arc::new(StringArray::from(host_names)),
+                Arc::new(StringArray::from(user_names)),
+            ],
+        )?;
+
+        // Execute the query using DataFusion
+        let results =
+            datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
+
+        // Convert RecordBatch results directly to QueryResult
+        QueryResult::from_record_batches(results)
+    }
+
+    async fn execute_logged_alarms_datafusion_query(
+        sql: &str,
+        query_info: &QueryInfo,
+        session: &AuthenticatedSession,
+    ) -> Result<QueryResult> {
+        let results = Self::fetch_logged_alarms_data(query_info, session).await?;
+
+        // Define the schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("instance_id", DataType::Int64, false),
+            Field::new("alarm_group_id", DataType::Int64, true),
+            Field::new("raise_time", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new("acknowledgment_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("clear_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("reset_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("modification_time", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new("state", DataType::Utf8, false),
+            Field::new("priority", DataType::Int64, true),
+            Field::new("event_text", DataType::Utf8, true),
+            Field::new("info_text", DataType::Utf8, true),
+            Field::new("origin", DataType::Utf8, true),
+            Field::new("area", DataType::Utf8, true),
+            Field::new("value", DataType::Utf8, true),
+            Field::new("host_name", DataType::Utf8, true),
+            Field::new("user_name", DataType::Utf8, true),
+            Field::new("duration", DataType::Utf8, true),
+        ]));
+
+        // Create columns from the results
+        let (
+            names,
+            instance_ids,
+            alarm_group_ids,
+            raise_times,
+            acknowledgment_times,
+            clear_times,
+            reset_times,
+            modification_times,
+            states,
+            priorities,
+            event_texts,
+            info_texts,
+            origins,
+            areas,
+            values,
+            host_names,
+            user_names,
+            durations,
+        ) = results.into_iter().fold(
+            (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            |mut acc, result| {
+                acc.0.push(result.name);
+                acc.1.push(result.instance_id as i64);
+                acc.2.push(result.alarm_group_id.map(|id| id as i64));
+                
+                let raise_time_nanos = chrono::DateTime::parse_from_rfc3339(&result.raise_time)
+                    .map(|dt| dt.timestamp_nanos_opt())
+                    .unwrap_or_default();
+                acc.3.push(raise_time_nanos);
+                
+                let ack_time_nanos = result.acknowledgment_time.as_ref()
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .and_then(|dt| dt.timestamp_nanos_opt());
+                acc.4.push(ack_time_nanos);
+                
+                let clear_time_nanos = result.clear_time.as_ref()
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .and_then(|dt| dt.timestamp_nanos_opt());
+                acc.5.push(clear_time_nanos);
+                
+                let reset_time_nanos = result.reset_time.as_ref()
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .and_then(|dt| dt.timestamp_nanos_opt());
+                acc.6.push(reset_time_nanos);
+                
+                let modification_time_nanos = chrono::DateTime::parse_from_rfc3339(&result.modification_time)
+                    .map(|dt| dt.timestamp_nanos_opt())
+                    .unwrap_or_default();
+                acc.7.push(modification_time_nanos);
+                
+                acc.8.push(result.state);
+                acc.9.push(result.priority.map(|p| p as i64));
+                acc.10.push(result.event_text.map(|v| v.join(";")));
+                acc.11.push(result.info_text.map(|v| v.join(";")));
+                acc.12.push(result.origin);
+                acc.13.push(result.area);
+                acc.14.push(result.value.map(|v| v.to_string()));
+                acc.15.push(result.host_name);
+                acc.16.push(result.user_name);
+                acc.17.push(result.duration);
+                acc
+            },
+        );
+
+        // Create a RecordBatch
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(names)),
+                Arc::new(Int64Array::from(instance_ids)),
+                Arc::new(Int64Array::from(alarm_group_ids)),
+                Arc::new(TimestampNanosecondArray::from(raise_times)),
+                Arc::new(TimestampNanosecondArray::from(acknowledgment_times)),
+                Arc::new(TimestampNanosecondArray::from(clear_times)),
+                Arc::new(TimestampNanosecondArray::from(reset_times)),
+                Arc::new(TimestampNanosecondArray::from(modification_times)),
+                Arc::new(StringArray::from(states)),
+                Arc::new(Int64Array::from(priorities)),
+                Arc::new(StringArray::from(event_texts)),
+                Arc::new(StringArray::from(info_texts)),
+                Arc::new(StringArray::from(origins)),
+                Arc::new(StringArray::from(areas)),
+                Arc::new(StringArray::from(values)),
+                Arc::new(StringArray::from(host_names)),
+                Arc::new(StringArray::from(user_names)),
+                Arc::new(StringArray::from(durations)),
+            ],
+        )?;
+
+        // Execute the query using DataFusion
+        let results =
+            datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
+
+        // Convert RecordBatch results directly to QueryResult
+        QueryResult::from_record_batches(results)
     }
 }

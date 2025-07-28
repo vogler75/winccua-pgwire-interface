@@ -276,6 +276,7 @@ pub enum SqlResult {
 pub struct QueryInfo {
     pub table: VirtualTable,
     pub columns: Vec<String>,
+    #[allow(dead_code)]
     pub column_mappings: std::collections::HashMap<String, String>, // alias -> original_column
     pub filters: Vec<ColumnFilter>,
     pub limit: Option<i64>,

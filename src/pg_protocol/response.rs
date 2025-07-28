@@ -83,6 +83,7 @@ pub(super) fn create_postgres_auth_ok_response() -> Vec<u8> {
     response
 }
 
+#[allow(dead_code)]
 pub(super) fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
     let mut response = Vec::new();
 
@@ -257,6 +258,7 @@ pub(super) fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
     response
 }
 
+#[allow(dead_code)]
 pub(super) fn format_as_extended_query_result(csv_data: &str, query_info: &crate::tables::QueryInfo) -> Vec<u8> {
     let mut response = Vec::new();
 
@@ -387,6 +389,7 @@ pub(super) fn create_ready_for_query_response() -> Vec<u8> {
     vec![b'Z', 0, 0, 0, 5, b'I']
 }
 
+#[allow(dead_code)]
 pub(super) fn create_command_complete_response(tag: &str) -> Vec<u8> {
     let mut response = vec![b'C'];
     let tag_bytes = tag.as_bytes();

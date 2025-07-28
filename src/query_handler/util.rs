@@ -130,6 +130,7 @@ impl QueryHandler {
         None
     }
 
+    #[allow(dead_code)]
     pub(super) fn convert_timestamp_to_postgres_format(timestamp_str: &str) -> String {
         // GraphQL returns UTC timestamps - format as TIMESTAMP (without timezone)
         // PostgreSQL TIMESTAMP format: YYYY-MM-DD HH:MM:SS.ssssss (no timezone)
@@ -179,6 +180,7 @@ impl QueryHandler {
         timestamp_str.to_string()
     }
 
+    #[allow(dead_code)]
     pub(super) fn create_csv_header_with_types(query_info: &QueryInfo) -> String {
         // Create header with type information that the formatter can use
         // Format: column1:type1,column2:type2,etc

@@ -1,7 +1,8 @@
 use anyhow::Result;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 // Helper function to create a simple single-row QueryResult
+#[allow(dead_code)]
 fn create_simple_query_result(column_name: &str, values: Vec<crate::query_handler::QueryValue>) -> crate::query_handler::QueryResult {
     use crate::query_handler::QueryResult;
     
@@ -29,12 +30,14 @@ fn create_command_complete_wire_response(tag: &str) -> Vec<u8> {
     response
 }
 
+#[allow(dead_code)]
 fn create_command_complete_response_text(command_tag: &str) -> String {
     // For Simple Query protocol, we return a text response that will be formatted later
     // The actual PostgreSQL CommandComplete message will be created by format_as_postgres_result
     format!("COMMAND_COMPLETE:{}", command_tag)
 }
 
+#[allow(dead_code)]
 fn create_empty_query_response() -> String {
     // Return a special marker for empty query that will be handled in the response formatting
     "EMPTY_QUERY_RESPONSE".to_string()

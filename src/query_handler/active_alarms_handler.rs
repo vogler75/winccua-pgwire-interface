@@ -5,6 +5,38 @@ use anyhow::Result;
 use tracing::{debug, info};
 
 impl QueryHandler {
+    pub(super) async fn fetch_active_alarms_data(
+        query_info: &QueryInfo,
+        session: &AuthenticatedSession,
+    ) -> Result<Vec<crate::graphql::types::ActiveAlarm>> {
+        info!("🚨 Fetching ActiveAlarms data");
+
+        // Extract filter string if any
+        let filter_string = Self::extract_alarm_filter_string(&query_info.filters).unwrap_or_default();
+        debug!("🔍 Alarm filter string: {:?}", filter_string);
+
+        // Call GraphQL - use empty system names to get all systems
+        let alarm_results = session
+            .client
+            .get_active_alarms(
+                &session.token,
+                vec![], // system_names - empty for all systems
+                filter_string,
+            )
+            .await?;
+        debug!(
+            "✅ GraphQL returned {} active alarms",
+            alarm_results.len()
+        );
+
+        // Apply additional filters
+        let filtered_results = Self::apply_alarm_filters(alarm_results, &query_info.filters)?;
+        debug!("✂️  After filtering: {} results", filtered_results.len());
+
+        Ok(filtered_results)
+    }
+
+    #[allow(dead_code)]
     pub(super) async fn execute_active_alarms_query(
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
@@ -36,6 +68,7 @@ impl QueryHandler {
         Self::format_active_alarms_response(filtered_results, query_info)
     }
 
+    #[allow(dead_code)]
     pub(super) fn format_active_alarms_response(
         results: Vec<crate::graphql::types::ActiveAlarm>,
         query_info: &QueryInfo,

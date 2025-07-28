@@ -73,7 +73,7 @@ impl SqlHandler {
         // For FROM-less queries like SELECT 1, SELECT VERSION(), etc.
         // Extract column names from the SELECT expressions
         let mut columns = Vec::new();
-        let mut column_mappings = std::collections::HashMap::new();
+        let column_mappings = std::collections::HashMap::new();
         
         for item in &select.projection {
             match item {
@@ -110,7 +110,7 @@ impl SqlHandler {
     
     fn generate_column_name_for_expression(expr: &Expr) -> String {
         match expr {
-            Expr::Value(Value::Number(n, _)) => "?column?".to_string(),
+            Expr::Value(Value::Number(_n, _)) => "?column?".to_string(),
             Expr::Value(Value::SingleQuotedString(_)) => "?column?".to_string(),
             Expr::Value(Value::Boolean(_)) => "?column?".to_string(),
             Expr::Function(func) => {
@@ -141,7 +141,7 @@ impl SqlHandler {
     fn extract_columns(select: &Select, table: &VirtualTable) -> Result<(Vec<String>, std::collections::HashMap<String, String>)> {
         let mut columns = Vec::new();
         let mut column_mappings = std::collections::HashMap::new();
-        let is_datafusion_table = matches!(table, VirtualTable::TagValues | VirtualTable::TagList | VirtualTable::LoggedTagValues);
+        let is_datafusion_table = matches!(table, VirtualTable::TagValues | VirtualTable::TagList | VirtualTable::LoggedTagValues | VirtualTable::ActiveAlarms | VirtualTable::LoggedAlarms);
 
         for item in &select.projection {
             match item {
@@ -1262,11 +1262,12 @@ mod tests {
 
     #[test]
     fn test_quality_filtering_runtime() {
+        #[allow(unused_imports)]
         use crate::query_handler::QueryHandler;
         use crate::graphql::types::{TagValueResult, Value, Quality};
         
         // Create mock TagValueResult with quality
-        let mut mock_result = TagValueResult {
+        let mock_result = TagValueResult {
             name: "TestTag".to_string(),
             value: Some(Value {
                 value: Some(serde_json::Value::Number(serde_json::Number::from(42))),
@@ -1296,8 +1297,8 @@ mod tests {
                     println!("🔍 Quality filter found: {:?}", filter);
                     
                     // Test the filtering logic directly
-                    let filters = vec![filter.clone()];
-                    let test_results = vec![mock_result];
+                    let _filters = vec![filter.clone()];
+                    let _test_results = vec![mock_result];
                     
                     // This should work but let's see what happens
                     // Note: We can't easily test apply_filters here since it's private
