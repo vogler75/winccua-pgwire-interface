@@ -125,8 +125,9 @@ pub(super) fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
         return response;
     }
 
-    // Parse CSV header with potential type information
-    let headers: Vec<&str> = lines[0].split(',').collect();
+    // Parse CSV header with potential type information, handling quoted fields
+    let headers = parse_csv_line(lines[0]);
+    tracing::debug!("CSV headers parsed: {:?}", headers);
     let mut column_types: std::collections::HashMap<String, &str> =
         std::collections::HashMap::new();
     let mut clean_headers: Vec<String> = Vec::new();
@@ -139,10 +140,10 @@ pub(super) fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
                 clean_headers.push(parts[0].to_string());
                 column_types.insert(parts[0].to_string(), parts[1]);
             } else {
-                clean_headers.push(header.to_string());
+                clean_headers.push(header.clone());
             }
         } else {
-            clean_headers.push(header.to_string());
+            clean_headers.push(header.clone());
         }
     }
 
@@ -189,23 +190,48 @@ pub(super) fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
 
     // DataRow messages: 'D' + length + column_count + columns
     let mut row_count = 0;
-    for line in lines.iter().skip(1) {
+    for (line_num, line) in lines.iter().skip(1).enumerate() {
         if line.trim().is_empty() {
             continue;
+        }
+        
+        // Debug log first data row
+        if line_num == 0 {
+            tracing::debug!("First data row: {}", line);
         }
 
         response.push(b'D');
 
-        let values: Vec<&str> = line.split(',').collect();
+        let values = parse_csv_line(line);
+        
+        // Ensure the number of values matches the number of headers
+        if values.len() != clean_headers.len() {
+            tracing::warn!(
+                "Column count mismatch: headers={}, values={} in line: {}",
+                clean_headers.len(),
+                values.len(),
+                line
+            );
+        }
+        
         let mut row_data = Vec::new();
-        row_data.extend_from_slice(&(values.len() as u16).to_be_bytes());
+        // IMPORTANT: Always send the number of columns from the header, not the actual values
+        // This ensures consistency with the RowDescription
+        row_data.extend_from_slice(&(clean_headers.len() as u16).to_be_bytes());
 
-        for value in values {
-            if value == "NULL" {
-                row_data.extend_from_slice(&(-1i32).to_be_bytes());
+        // Process values, padding with NULL if we have fewer values than headers
+        for i in 0..clean_headers.len() {
+            if i < values.len() {
+                let value = &values[i];
+                if value == "NULL" {
+                    row_data.extend_from_slice(&(-1i32).to_be_bytes());
+                } else {
+                    row_data.extend_from_slice(&(value.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(value.as_bytes());
+                }
             } else {
-                row_data.extend_from_slice(&(value.len() as u32).to_be_bytes());
-                row_data.extend_from_slice(value.as_bytes());
+                // Pad with NULL if we don't have enough values
+                row_data.extend_from_slice(&(-1i32).to_be_bytes());
             }
         }
 
@@ -228,6 +254,120 @@ pub(super) fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
     response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
     response.push(b'I'); // Status: 'I' = idle
 
+    response
+}
+
+pub(super) fn format_as_extended_query_result(csv_data: &str, query_info: &crate::tables::QueryInfo) -> Vec<u8> {
+    let mut response = Vec::new();
+
+    // Handle command complete for non-query statements
+    if csv_data.starts_with("COMMAND_COMPLETE:") {
+        let command_tag = csv_data.strip_prefix("COMMAND_COMPLETE:").unwrap_or("OK");
+        response.extend_from_slice(&create_command_complete_response(command_tag));
+        return response;
+    }
+
+    // Handle empty query response
+    if csv_data.trim() == "EMPTY_QUERY_RESPONSE" {
+        response.extend_from_slice(&create_command_complete_response(""));
+        return response;
+    }
+
+    let lines: Vec<&str> = csv_data.trim().split('\n').collect();
+    if lines.is_empty() {
+        response.extend_from_slice(&create_command_complete_response(""));
+        return response;
+    }
+
+    // --- 1. RowDescription ---
+    response.extend_from_slice(&create_row_description_response(query_info));
+
+    // --- 2. DataRows ---
+    let mut row_count = 0;
+    for line in lines.iter().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        response.push(b'D'); // DataRow message type
+        let values = parse_csv_line(line);
+        
+        // Check for column count mismatch
+        if values.len() != query_info.columns.len() {
+            tracing::warn!(
+                "Extended query column count mismatch: expected={}, actual={} in line: {}",
+                query_info.columns.len(),
+                values.len(),
+                line
+            );
+        }
+        
+        let mut row_data = Vec::new();
+        // Always use the column count from query_info for consistency
+        row_data.extend_from_slice(&(query_info.columns.len() as u16).to_be_bytes());
+        
+        // Process values, padding with NULL if needed
+        for i in 0..query_info.columns.len() {
+            if i < values.len() {
+                let value = &values[i];
+                if value == "NULL" {
+                    row_data.extend_from_slice(&(-1i32).to_be_bytes());
+                } else {
+                    row_data.extend_from_slice(&(value.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(value.as_bytes());
+                }
+            } else {
+                // Pad with NULL if we don't have enough values
+                row_data.extend_from_slice(&(-1i32).to_be_bytes());
+            }
+        }
+        let length = 4 + row_data.len();
+        response.extend_from_slice(&(length as u32).to_be_bytes());
+        response.extend_from_slice(&row_data);
+        row_count += 1;
+    }
+
+    // --- 3. CommandComplete ---
+    let tag = format!("SELECT {}", row_count);
+    response.extend_from_slice(&create_command_complete_response(&tag));
+
+    response
+}
+
+pub(super) fn create_row_description_response(query_info: &crate::tables::QueryInfo) -> Vec<u8> {
+    let mut response = Vec::new();
+    response.push(b'T'); // RowDescription message type
+
+    let mut fields_data = Vec::new();
+    fields_data.extend_from_slice(&(query_info.columns.len() as u16).to_be_bytes());
+
+    for (i, header) in query_info.columns.iter().enumerate() {
+        fields_data.extend_from_slice(header.as_bytes());
+        fields_data.push(0); // Null terminator for name
+
+        // Add dummy table/column IDs
+        fields_data.extend_from_slice(&0u32.to_be_bytes()); // Table OID
+        fields_data.extend_from_slice(&(i as u16).to_be_bytes()); // Column index
+
+        // Determine data type OID based on column name/type hint
+        let type_oid: u32 = 25; // Default to TEXT
+        fields_data.extend_from_slice(&type_oid.to_be_bytes()); // Data type OID
+
+        // Add type size (-1 for variable size)
+        let type_size: i16 = -1;
+        fields_data.extend_from_slice(&type_size.to_be_bytes());
+
+        // Add type modifier (-1 for default)
+        let type_modifier: i32 = -1;
+        fields_data.extend_from_slice(&type_modifier.to_be_bytes());
+
+        // Add format code (0 for text)
+        let format_code: i16 = 0;
+        fields_data.extend_from_slice(&format_code.to_be_bytes());
+    }
+
+    let length = 4 + fields_data.len();
+    response.extend_from_slice(&(length as u32).to_be_bytes());
+    response.extend_from_slice(&fields_data);
     response
 }
 
@@ -272,4 +412,148 @@ pub(super) fn create_parameter_description_response(param_oids: &[u32]) -> Vec<u
 
 pub(super) fn create_empty_row_description_response() -> Vec<u8> {
     vec![b'n', 0, 0, 0, 4]
+}
+
+/// Format QueryResult directly to PostgreSQL wire protocol
+pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handler::QueryResult) -> Vec<u8> {
+    let mut response = Vec::new();
+    
+    // RowDescription message: 'T' + length + field_count + fields
+    response.push(b'T');
+    
+    let mut fields_data = Vec::new();
+    fields_data.extend_from_slice(&(result.columns.len() as u16).to_be_bytes());
+    
+    for (i, column_name) in result.columns.iter().enumerate() {
+        fields_data.extend_from_slice(column_name.as_bytes());
+        fields_data.push(0); // Null terminator for name
+        
+        // Add dummy table/column IDs
+        fields_data.extend_from_slice(&0u32.to_be_bytes()); // Table OID
+        fields_data.extend_from_slice(&(i as u16).to_be_bytes()); // Column index
+        
+        // Use provided type OID or default to TEXT
+        let type_oid = if i < result.column_types.len() {
+            result.column_types[i]
+        } else {
+            25 // TEXT
+        };
+        fields_data.extend_from_slice(&type_oid.to_be_bytes());
+        
+        // Add type size (-1 for variable size)
+        let type_size: i16 = -1;
+        fields_data.extend_from_slice(&type_size.to_be_bytes());
+        
+        // Add type modifier (-1 for default)
+        let type_modifier: i32 = -1;
+        fields_data.extend_from_slice(&type_modifier.to_be_bytes());
+        
+        // Add format code (0 for text)
+        let format_code: i16 = 0;
+        fields_data.extend_from_slice(&format_code.to_be_bytes());
+    }
+    
+    let length = 4 + fields_data.len();
+    response.extend_from_slice(&(length as u32).to_be_bytes());
+    response.extend_from_slice(&fields_data);
+    
+    // DataRow messages: 'D' + length + column_count + columns
+    for row in &result.rows {
+        response.push(b'D');
+        
+        let mut row_data = Vec::new();
+        row_data.extend_from_slice(&(row.len() as u16).to_be_bytes());
+        
+        for value in row {
+            match value {
+                crate::query_handler::QueryValue::Null => {
+                    row_data.extend_from_slice(&(-1i32).to_be_bytes());
+                }
+                crate::query_handler::QueryValue::Text(s) => {
+                    row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(s.as_bytes());
+                }
+                crate::query_handler::QueryValue::Integer(i) => {
+                    let s = i.to_string();
+                    row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(s.as_bytes());
+                }
+                crate::query_handler::QueryValue::Float(f) => {
+                    let s = f.to_string();
+                    row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(s.as_bytes());
+                }
+                crate::query_handler::QueryValue::Timestamp(s) => {
+                    row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(s.as_bytes());
+                }
+                crate::query_handler::QueryValue::Boolean(b) => {
+                    let s = if *b { "true" } else { "false" };
+                    row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(s.as_bytes());
+                }
+            }
+        }
+        
+        let length = 4 + row_data.len();
+        response.extend_from_slice(&(length as u32).to_be_bytes());
+        response.extend_from_slice(&row_data);
+    }
+    
+    // CommandComplete message: 'C' + length + tag
+    response.push(b'C');
+    let tag = format!("SELECT {}", result.rows.len());
+    let tag_length = 4 + tag.len() + 1; // 4 bytes for length + tag + null terminator
+    response.extend_from_slice(&(tag_length as u32).to_be_bytes());
+    response.extend_from_slice(tag.as_bytes());
+    response.push(0); // Null terminator
+    
+    // ReadyForQuery message: 'Z' + length + status
+    response.push(b'Z');
+    response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
+    response.push(b'I'); // Status: 'I' = idle
+    
+    response
+}
+
+// Parse CSV line handling quoted fields properly
+pub(crate) fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current_field = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                if in_quotes {
+                    // Check if this is an escaped quote
+                    if chars.peek() == Some(&'"') {
+                        current_field.push('"');
+                        chars.next(); // consume the second quote
+                    } else {
+                        in_quotes = false;
+                    }
+                } else {
+                    in_quotes = true;
+                }
+            }
+            ',' => {
+                if in_quotes {
+                    current_field.push(',');
+                } else {
+                    fields.push(current_field.clone());
+                    current_field.clear();
+                }
+            }
+            _ => {
+                current_field.push(ch);
+            }
+        }
+    }
+    
+    // Don't forget the last field
+    fields.push(current_field);
+    
+    fields
 }

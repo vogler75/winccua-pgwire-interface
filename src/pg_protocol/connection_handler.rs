@@ -256,7 +256,7 @@ async fn handle_simple_text_protocol(
                                 peer_addr,
                                 response.len()
                             );
-                            socket.write_all(response.as_bytes()).await?;
+                            socket.write_all(&response).await?;
                         }
                         Err(e) => {
                             error!("❌ Query processing error for {}: {}", peer_addr, e);

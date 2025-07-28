@@ -19,10 +19,195 @@ use arrow::record_batch::RecordBatch;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+/// Represents a single value in a query result
+#[derive(Debug, Clone)]
+pub enum QueryValue {
+    Null,
+    Text(String),
+    Integer(i64),
+    Float(f64),
+    Timestamp(String),
+    Boolean(bool),
+}
+
+/// Represents the result of a SQL query
+#[derive(Debug)]
+pub struct QueryResult {
+    /// Column names in order
+    pub columns: Vec<String>,
+    /// Column types (PostgreSQL OIDs)
+    pub column_types: Vec<u32>,
+    /// Rows of data
+    pub rows: Vec<Vec<QueryValue>>,
+}
+
+impl QueryResult {
+    /// Create an empty result with just column definitions
+    pub fn new(columns: Vec<String>, column_types: Vec<u32>) -> Self {
+        Self {
+            columns,
+            column_types,
+            rows: Vec::new(),
+        }
+    }
+    
+    /// Add a row to the result
+    pub fn add_row(&mut self, row: Vec<QueryValue>) {
+        self.rows.push(row);
+    }
+    
+    /// Get the number of rows
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+    
+    /// Temporary compatibility function to convert from CSV strings
+    /// This should be removed when all handlers are updated
+    pub fn from_csv_string(csv_data: &str) -> Result<Self> {
+        let lines: Vec<&str> = csv_data.trim().split('\n').collect();
+        if lines.is_empty() {
+            return Ok(QueryResult::new(vec![], vec![]));
+        }
+        
+        // Parse CSV header with type information
+        let headers = super::pg_protocol::response::parse_csv_line(lines[0]);
+        let mut column_types: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut clean_headers: Vec<String> = Vec::new();
+        
+        for header in &headers {
+            if header.contains(':') {
+                let parts: Vec<&str> = header.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    clean_headers.push(parts[0].to_string());
+                    let type_oid = match parts[1] {
+                        "NUMERIC" => 1700,
+                        "TIMESTAMP" => 1114,
+                        "TEXT" => 25,
+                        _ => 25,
+                    };
+                    column_types.insert(parts[0].to_string(), type_oid);
+                } else {
+                    clean_headers.push(header.clone());
+                }
+            } else {
+                clean_headers.push(header.clone());
+            }
+        }
+        
+        // Create column types vector
+        let col_types: Vec<u32> = clean_headers.iter()
+            .map(|name| column_types.get(name).copied().unwrap_or(25))
+            .collect();
+        
+        let mut result = QueryResult::new(clean_headers, col_types);
+        
+        // Process data rows
+        for line in lines.iter().skip(1) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            
+            let values = super::pg_protocol::response::parse_csv_line(line);
+            let row: Vec<QueryValue> = values.into_iter().map(|v| {
+                if v == "NULL" {
+                    QueryValue::Null
+                } else {
+                    QueryValue::Text(v)
+                }
+            }).collect();
+            
+            result.add_row(row);
+        }
+        
+        Ok(result)
+    }
+    
+    /// Convert from Arrow RecordBatch
+    pub fn from_record_batches(batches: Vec<RecordBatch>) -> Result<Self> {
+        if batches.is_empty() {
+            return Ok(QueryResult::new(vec![], vec![]));
+        }
+        
+        let schema = batches[0].schema();
+        let mut columns = Vec::new();
+        let mut column_types = Vec::new();
+        
+        // Extract column names and types
+        for field in schema.fields() {
+            columns.push(field.name().clone());
+            column_types.push(arrow_type_to_postgres_oid(field.data_type()));
+        }
+        
+        let mut result = QueryResult::new(columns, column_types);
+        
+        // Process each batch
+        for batch in batches {
+            let num_rows = batch.num_rows();
+            let num_cols = batch.num_columns();
+            
+            for row_idx in 0..num_rows {
+                let mut row = Vec::new();
+                
+                for col_idx in 0..num_cols {
+                    let column = batch.column(col_idx);
+                    let value = extract_value_from_array(column, row_idx)?;
+                    row.push(value);
+                }
+                
+                result.add_row(row);
+            }
+        }
+        
+        Ok(result)
+    }
+}
+
+// Convert Arrow DataType to PostgreSQL OID
+fn arrow_type_to_postgres_oid(data_type: &DataType) -> u32 {
+    match data_type {
+        DataType::Boolean => 16,     // bool
+        DataType::Int16 => 21,       // int2
+        DataType::Int32 => 23,       // int4
+        DataType::Int64 => 20,       // int8
+        DataType::Float32 => 700,    // float4
+        DataType::Float64 => 701,    // float8
+        DataType::Utf8 => 25,        // text
+        DataType::Timestamp(_, _) => 1114, // timestamp
+        _ => 25,                     // default to text
+    }
+}
+
+// Extract a value from an Arrow array at a specific index
+fn extract_value_from_array(array: &dyn arrow::array::Array, index: usize) -> Result<QueryValue> {
+    use arrow::array::*;
+    
+    if array.is_null(index) {
+        return Ok(QueryValue::Null);
+    }
+    
+    // Try to downcast to specific array types
+    if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
+        Ok(QueryValue::Boolean(arr.value(index)))
+    } else if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
+        Ok(QueryValue::Integer(arr.value(index)))
+    } else if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
+        Ok(QueryValue::Float(arr.value(index)))
+    } else if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+        Ok(QueryValue::Text(arr.value(index).to_string()))
+    } else if let Some(arr) = array.as_any().downcast_ref::<TimestampNanosecondArray>() {
+        let timestamp = arr.value(index);
+        let datetime = chrono::DateTime::from_timestamp_nanos(timestamp);
+        Ok(QueryValue::Timestamp(datetime.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()))
+    } else {
+        // Fallback: convert to string
+        Ok(QueryValue::Text(format!("{:?}", array)))
+    }
+}
+
 pub struct QueryHandler;
 
 impl QueryHandler {
-    pub async fn execute_query(sql: &str, session: &AuthenticatedSession) -> Result<String> {
+    pub async fn execute_query(sql: &str, session: &AuthenticatedSession) -> Result<QueryResult> {
         info!("🔍 Executing SQL query: {}", sql.trim());
 
         // Parse the SQL query
@@ -70,8 +255,8 @@ impl QueryHandler {
             }
             SqlResult::SetStatement(set_command) => {
                 info!("✅ Successfully executed SET statement: {}", set_command);
-                // Return a command complete response for SET statements
-                Ok("COMMAND_COMPLETE:SET".to_string())
+                // Return empty result for SET statements
+                Ok(QueryResult::new(vec![], vec![]))
             }
         }
     }
@@ -80,7 +265,7 @@ impl QueryHandler {
         sql: &str,
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
-    ) -> Result<String> {
+    ) -> Result<QueryResult> {
         let results = Self::fetch_tag_list_data(query_info, session).await?;
 
         // Define the schema
@@ -118,23 +303,15 @@ impl QueryHandler {
         let results =
             datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
 
-        // Format the results back to a CSV string
-        let mut csv_bytes = Vec::new();
-        if !results.is_empty() {
-            let mut writer = arrow::csv::Writer::new(&mut csv_bytes);
-            for batch in results {
-                writer.write(&batch)?;
-            }
-        }
-
-        Ok(String::from_utf8(csv_bytes)?)
+        // Convert RecordBatch results directly to QueryResult
+        QueryResult::from_record_batches(results)
     }
 
     async fn execute_loggedtagvalues_datafusion_query(
         sql: &str,
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
-    ) -> Result<String> {
+    ) -> Result<QueryResult> {
         let results = Self::fetch_logged_tag_values_data(query_info, session).await?;
 
         // Define the schema
@@ -201,23 +378,15 @@ impl QueryHandler {
         let results =
             datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
 
-        // Format the results back to a CSV string
-        let mut csv_bytes = Vec::new();
-        if !results.is_empty() {
-            let mut writer = arrow::csv::Writer::new(&mut csv_bytes);
-            for batch in results {
-                writer.write(&batch)?;
-            }
-        }
-
-        Ok(String::from_utf8(csv_bytes)?)
+        // Convert RecordBatch results directly to QueryResult
+        QueryResult::from_record_batches(results)
     }
 
     async fn execute_datafusion_query(
         sql: &str,
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
-    ) -> Result<String> {
+    ) -> Result<QueryResult> {
         let results = Self::fetch_tag_values_data(query_info, session).await?;
 
         // Define the schema
@@ -292,15 +461,7 @@ impl QueryHandler {
         let results =
             datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
 
-        // Format the results back to a CSV string
-        let mut csv_bytes = Vec::new();
-        if !results.is_empty() {
-            let mut writer = arrow::csv::Writer::new(&mut csv_bytes);
-            for batch in results {
-                writer.write(&batch)?;
-            }
-        }
-
-        Ok(String::from_utf8(csv_bytes)?)
+        // Convert RecordBatch results directly to QueryResult
+        QueryResult::from_record_batches(results)
     }
 }

@@ -2,7 +2,7 @@ mod authentication;
 mod connection_handler;
 mod message_handler;
 mod query_execution;
-mod response;
+pub(crate) mod response;
 mod startup;
 
 use crate::auth::SessionManager;

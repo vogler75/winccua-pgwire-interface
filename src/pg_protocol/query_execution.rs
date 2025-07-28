@@ -1,6 +1,34 @@
 use anyhow::Result;
 use tracing::{debug, info, warn};
 
+// Helper function to create a simple single-row QueryResult
+fn create_simple_query_result(column_name: &str, values: Vec<crate::query_handler::QueryValue>) -> crate::query_handler::QueryResult {
+    use crate::query_handler::QueryResult;
+    
+    let mut result = QueryResult::new(vec![column_name.to_string()], vec![25]); // TEXT type
+    result.add_row(values);
+    result
+}
+
+// Helper function to create CommandComplete wire response
+fn create_command_complete_wire_response(tag: &str) -> Vec<u8> {
+    let mut response = Vec::new();
+    
+    // CommandComplete message: 'C' + length + tag + null
+    response.push(b'C');
+    let tag_length = 4 + tag.len() + 1;
+    response.extend_from_slice(&(tag_length as u32).to_be_bytes());
+    response.extend_from_slice(tag.as_bytes());
+    response.push(0);
+    
+    // ReadyForQuery message: 'Z' + length + status
+    response.push(b'Z');
+    response.extend_from_slice(&5u32.to_be_bytes());
+    response.push(b'I'); // Idle
+    
+    response
+}
+
 fn create_command_complete_response_text(command_tag: &str) -> String {
     // For Simple Query protocol, we return a text response that will be formatted later
     // The actual PostgreSQL CommandComplete message will be created by format_as_postgres_result
@@ -15,14 +43,21 @@ fn create_empty_query_response() -> String {
 pub(super) async fn handle_simple_query(
     query: &str,
     session: &crate::auth::AuthenticatedSession,
-) -> Result<String> {
+) -> Result<Vec<u8>> {
     debug!("🔍 Processing query: {}", query.trim());
 
     // Handle empty queries (just whitespace and/or semicolons)
     let cleaned_query = query.trim().trim_end_matches(';').trim();
     if cleaned_query.is_empty() {
         info!("⚪ Empty query received, returning empty query response");
-        return Ok(create_empty_query_response());
+        // Return empty query response
+        let mut response = Vec::new();
+        response.push(b'I'); // EmptyQueryResponse
+        response.extend_from_slice(&4u32.to_be_bytes());
+        response.push(b'Z'); // ReadyForQuery
+        response.extend_from_slice(&5u32.to_be_bytes());
+        response.push(b'I'); // Idle
+        return Ok(response);
     }
 
     let trimmed_query = query.trim().to_uppercase();
@@ -33,7 +68,7 @@ pub(super) async fn handle_simple_query(
             "📋 Transaction control statement (acknowledged): {}",
             query.trim()
         );
-        return Ok(create_command_complete_response_text(
+        return Ok(create_command_complete_wire_response(
             &get_transaction_command_tag(&trimmed_query),
         ));
     }
@@ -48,7 +83,8 @@ pub(super) async fn handle_simple_query(
                 "🔧 SET statement detected, routing to QueryHandler: {}",
                 query.trim()
             );
-            return crate::query_handler::QueryHandler::execute_query(query, session).await;
+            let result = crate::query_handler::QueryHandler::execute_query(query, session).await?;
+            return Ok(super::response::format_query_result_as_postgres_result(&result));
         }
 
         // Handle SELECT statements with actual data (CSV format: header line, then data lines)
@@ -61,29 +97,35 @@ pub(super) async fn handle_simple_query(
                 Ok(_) => debug!("Session extended successfully"),
                 Err(e) => warn!("Failed to extend session: {}", e),
             }
-            return Ok("?column?\n1".to_string());
+            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Text("1".to_string())]);
+            return Ok(super::response::format_query_result_as_postgres_result(&result));
         } else if query_without_semicolon == "SELECT TRUE" {
             info!("🔍 Returning data for SELECT TRUE");
-            return Ok("?column?\nt".to_string());
+            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Boolean(true)]);
+            return Ok(super::response::format_query_result_as_postgres_result(&result));
         } else if query_without_semicolon == "SELECT FALSE" {
             info!("🔍 Returning data for SELECT FALSE");
-            return Ok("?column?\nf".to_string());
+            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Boolean(false)]);
+            return Ok(super::response::format_query_result_as_postgres_result(&result));
         } else if query_without_semicolon == "SELECT VERSION()" {
             info!("🔍 Returning data for SELECT VERSION()");
-            return Ok("version\nWinCC Unified PostgreSQL Interface 1.0".to_string());
+            let result = create_simple_query_result("version", vec![crate::query_handler::QueryValue::Text("WinCC Unified PostgreSQL Interface 1.0".to_string())]);
+            return Ok(super::response::format_query_result_as_postgres_result(&result));
         } else if query_without_semicolon == "SELECT CURRENT_DATABASE()" {
             info!("🔍 Returning data for SELECT CURRENT_DATABASE()");
-            return Ok("current_database\nsystem".to_string());
+            let result = create_simple_query_result("current_database", vec![crate::query_handler::QueryValue::Text("system".to_string())]);
+            return Ok(super::response::format_query_result_as_postgres_result(&result));
         }
 
         // For other utility statements, just acknowledge
-        return Ok(create_command_complete_response_text(
+        return Ok(create_command_complete_wire_response(
             &get_utility_command_tag(&trimmed_query),
         ));
     }
 
     // Use the new query handler for all SQL processing
-    crate::query_handler::QueryHandler::execute_query(query, session).await
+    let result = crate::query_handler::QueryHandler::execute_query(query, session).await?;
+    Ok(super::response::format_query_result_as_postgres_result(&result))
 }
 
 pub(super) fn is_transaction_control_statement(query: &str) -> bool {

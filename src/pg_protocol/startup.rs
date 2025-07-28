@@ -658,6 +658,25 @@ pub(super) async fn handle_postgres_startup(
 
             let mut pos = 0;
             let mut response_buffer = Vec::new();
+            
+            // Log all incoming messages in this batch
+            debug!("📨 Processing batch of {} bytes from {}", n, peer_addr);
+            let mut temp_pos = 0;
+            while temp_pos < n && temp_pos + 5 <= n {
+                let msg_type = buffer[temp_pos] as char;
+                let msg_len = u32::from_be_bytes([
+                    buffer[temp_pos + 1],
+                    buffer[temp_pos + 2],
+                    buffer[temp_pos + 3],
+                    buffer[temp_pos + 4],
+                ]) as usize;
+                debug!("   Incoming message: type='{}' length={}", msg_type, msg_len);
+                temp_pos += 1 + msg_len;
+                if temp_pos > n {
+                    break;
+                }
+            }
+            
             while pos < n {
                 let message_slice = &buffer[pos..n];
                 if message_slice.len() < 5 {
@@ -688,6 +707,10 @@ pub(super) async fn handle_postgres_startup(
                 {
                     Ok(response) => {
                         if !response.is_empty() {
+                            debug!("📤 Adding {} bytes to response buffer for message type '{}'", 
+                                response.len(), 
+                                message_slice[0] as char
+                            );
                             response_buffer.extend_from_slice(&response);
                         }
                     }
@@ -715,6 +738,24 @@ pub(super) async fn handle_postgres_startup(
                     peer_addr,
                     response_buffer.len()
                 );
+                
+                // Log all outgoing messages in this response
+                let mut temp_pos = 0;
+                while temp_pos < response_buffer.len() && temp_pos + 5 <= response_buffer.len() {
+                    let msg_type = response_buffer[temp_pos] as char;
+                    let msg_len = u32::from_be_bytes([
+                        response_buffer[temp_pos + 1],
+                        response_buffer[temp_pos + 2],
+                        response_buffer[temp_pos + 3],
+                        response_buffer[temp_pos + 4],
+                    ]) as usize;
+                    debug!("   Outgoing message: type='{}' length={}", msg_type, msg_len);
+                    temp_pos += 1 + msg_len;
+                    if temp_pos > response_buffer.len() {
+                        break;
+                    }
+                }
+                
                 socket.write_all(&response_buffer).await?;
             }
         }

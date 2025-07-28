@@ -1,4 +1,5 @@
-use crate::pg_protocol::response::{create_command_complete_response, format_as_postgres_result};
+use crate::sql_handler::SqlHandler;
+use crate::tables::SqlResult;
 use anyhow::{anyhow, Result};
 use tracing::{debug, info, warn};
 
@@ -6,8 +7,9 @@ use super::{
     query_execution::handle_simple_query,
     response::{
         create_bind_complete_response, create_close_complete_response,
-        create_empty_row_description_response, create_parameter_description_response,
-        create_parse_complete_response, create_ready_for_query_response,
+        create_empty_row_description_response,
+        create_parameter_description_response, create_parse_complete_response,
+        create_ready_for_query_response, create_row_description_response,
     },
     ConnectionState, Portal, PreparedStatement,
 };
@@ -42,7 +44,7 @@ pub(super) async fn handle_postgres_message(
         length
     );
 
-    match message_type {
+    let result = match message_type {
         b'Q' => handle_simple_query_message(payload, session).await,
         b'P' => handle_parse_message(payload, connection_state).await,
         b'B' => handle_bind_message(payload, connection_state).await,
@@ -63,7 +65,19 @@ pub(super) async fn handle_postgres_message(
             );
             Err(anyhow!("Unsupported message type: 0x{:02X}", message_type))
         }
+    };
+    
+    // Log response details
+    if let Ok(ref response) = result {
+        if !response.is_empty() {
+            debug!("📤 Response for message type '{}': {} bytes", 
+                if message_type.is_ascii_graphic() { message_type as char } else { '?' },
+                response.len()
+            );
+        }
     }
+    
+    result
 }
 
 async fn handle_simple_query_message(
@@ -77,7 +91,7 @@ async fn handle_simple_query_message(
     info!("📥 Simple Query: {}", query_str.trim());
 
     match handle_simple_query(query_str, session).await {
-        Ok(response) => Ok(format_as_postgres_result(&response)),
+        Ok(response) => Ok(response),
         Err(e) => Err(e),
     }
 }
@@ -314,8 +328,16 @@ async fn handle_execute_message(
     // Execute the query
     match handle_simple_query(&final_query, session).await {
         Ok(response) => {
-            let result = format_as_extended_query_result(&response);
-            Ok(result)
+            debug!("📤 Extended query result: {} bytes", response.len());
+            // Log the message types in the response
+            let mut pos = 0;
+            while pos < response.len() && pos + 5 <= response.len() {
+                let msg_type = response[pos] as char;
+                let msg_len = u32::from_be_bytes([response[pos+1], response[pos+2], response[pos+3], response[pos+4]]) as usize;
+                debug!("   Message type '{}' ({} bytes)", msg_type, msg_len);
+                pos += 1 + msg_len;
+            }
+            Ok(response)
         }
         Err(e) => Err(e),
     }
@@ -341,17 +363,69 @@ async fn handle_describe_message(
 
     match object_type {
         b'S' => {
-            // Describe statement
-            if let Some(_statement) = connection_state.prepared_statements.get(object_name) {
-                Ok(create_parameter_description_response(&[]))
+            // Describe statement - return both ParameterDescription and RowDescription
+            if let Some(statement) = connection_state.prepared_statements.get(object_name) {
+                let mut response = Vec::new();
+                
+                // First send ParameterDescription
+                response.extend_from_slice(&create_parameter_description_response(&statement.parameter_types));
+                
+                // For SELECT queries, also send RowDescription
+                let trimmed_query = statement.query.trim().to_uppercase();
+                if !trimmed_query.starts_with("SET")
+                    && !super::query_execution::is_transaction_control_statement(&trimmed_query)
+                    && !super::query_execution::is_utility_statement(&trimmed_query)
+                {
+                    match SqlHandler::parse_query(&statement.query) {
+                        Ok(SqlResult::Query(query_info)) => {
+                            response.extend_from_slice(&create_row_description_response(&query_info));
+                        }
+                        _ => {
+                            // For non-SELECT statements, send NoData
+                            response.push(b'n'); // NoData message
+                            response.extend_from_slice(&4u32.to_be_bytes()); // Length: 4
+                        }
+                    }
+                } else {
+                    // For SET/utility statements, send NoData
+                    response.push(b'n'); // NoData message
+                    response.extend_from_slice(&4u32.to_be_bytes()); // Length: 4
+                }
+                
+                Ok(response)
             } else {
                 Err(anyhow!("Statement '{}' not found", object_name))
             }
         }
         b'P' => {
-            // Describe portal - return row description
-            if connection_state.portals.contains_key(object_name) {
-                Ok(create_empty_row_description_response())
+            // Describe portal - return proper row description based on the query
+            if let Some(portal) = connection_state.portals.get(object_name) {
+                if let Some(statement) = connection_state.prepared_statements.get(&portal.statement_name) {
+                    // For SET statements and utility statements, return empty row description
+                    let trimmed_query = statement.query.trim().to_uppercase();
+                    if trimmed_query.starts_with("SET")
+                        || super::query_execution::is_transaction_control_statement(&trimmed_query)
+                        || super::query_execution::is_utility_statement(&trimmed_query)
+                    {
+                        return Ok(create_empty_row_description_response());
+                    }
+                    
+                    // For SELECT queries, parse and generate proper row description
+                    match SqlHandler::parse_query(&statement.query) {
+                        Ok(SqlResult::Query(query_info)) => {
+                            Ok(create_row_description_response(&query_info))
+                        }
+                        Ok(SqlResult::SetStatement(_)) => {
+                            Ok(create_empty_row_description_response())
+                        }
+                        Err(_) => {
+                            // Fallback to empty row description if parsing fails
+                            Ok(create_empty_row_description_response())
+                        }
+                    }
+                } else {
+                    Err(anyhow!("Statement '{}' not found for portal '{}'", portal.statement_name, object_name))
+                }
             } else {
                 Err(anyhow!("Portal '{}' not found", object_name))
             }
@@ -433,99 +507,3 @@ fn extract_null_terminated_string<'a>(payload: &'a [u8], pos: &mut usize) -> Res
     Ok(result)
 }
 
-fn format_as_extended_query_result(csv_data: &str) -> Vec<u8> {
-    let mut response = Vec::new();
-
-    if csv_data.starts_with("COMMAND_COMPLETE:") {
-        let command_tag = csv_data.strip_prefix("COMMAND_COMPLETE:").unwrap_or("OK");
-        response.extend_from_slice(&create_command_complete_response(command_tag));
-        return response;
-    }
-
-    if csv_data.trim() == "EMPTY_QUERY_RESPONSE" {
-        response.extend_from_slice(&create_command_complete_response(""));
-        return response;
-    }
-
-    let lines: Vec<&str> = csv_data.trim().split('\n').collect();
-    if lines.is_empty() {
-        response.extend_from_slice(&create_command_complete_response(""));
-        return response;
-    }
-
-    let headers: Vec<&str> = lines[0].split(',').collect();
-    let mut column_types: std::collections::HashMap<String, &str> =
-        std::collections::HashMap::new();
-    let mut clean_headers: Vec<String> = Vec::new();
-
-    for header in &headers {
-        if header.contains(':') {
-            let parts: Vec<&str> = header.splitn(2, ':').collect();
-            if parts.len() == 2 {
-                clean_headers.push(parts[0].to_string());
-                column_types.insert(parts[0].to_string(), parts[1]);
-            } else {
-                clean_headers.push(header.to_string());
-            }
-        } else {
-            clean_headers.push(header.to_string());
-        }
-    }
-
-    response.push(b'T');
-
-    let mut fields_data = Vec::new();
-    fields_data.extend_from_slice(&(clean_headers.len() as u16).to_be_bytes());
-
-    for (i, header) in clean_headers.iter().enumerate() {
-        fields_data.extend_from_slice(header.as_bytes());
-        fields_data.push(0);
-        fields_data.extend_from_slice(&0u32.to_be_bytes());
-        fields_data.extend_from_slice(&(i as u16).to_be_bytes());
-        let type_oid: u32 = match column_types.get(header.as_str()).unwrap_or(&"TEXT") {
-            &"NUMERIC" => 1700,
-            &"TIMESTAMP" => 1114,
-            &"TEXT" => 25,
-            _ => 25,
-        };
-        fields_data.extend_from_slice(&type_oid.to_be_bytes());
-        let type_size: i16 = -1;
-        fields_data.extend_from_slice(&type_size.to_be_bytes());
-        let type_modifier: i32 = -1;
-        fields_data.extend_from_slice(&type_modifier.to_be_bytes());
-        let format_code: i16 = 0;
-        fields_data.extend_from_slice(&format_code.to_be_bytes());
-    }
-
-    let length = 4 + fields_data.len();
-    response.extend_from_slice(&(length as u32).to_be_bytes());
-    response.extend_from_slice(&fields_data);
-
-    let mut row_count = 0;
-    for line in lines.iter().skip(1) {
-        if line.trim().is_empty() {
-            continue;
-        }
-        response.push(b'D');
-        let values: Vec<&str> = line.split(',').collect();
-        let mut row_data = Vec::new();
-        row_data.extend_from_slice(&(values.len() as u16).to_be_bytes());
-        for value in values {
-            if value == "NULL" {
-                row_data.extend_from_slice(&(-1i32).to_be_bytes());
-            } else {
-                row_data.extend_from_slice(&(value.len() as u32).to_be_bytes());
-                row_data.extend_from_slice(value.as_bytes());
-            }
-        }
-        let length = 4 + row_data.len();
-        response.extend_from_slice(&(length as u32).to_be_bytes());
-        response.extend_from_slice(&row_data);
-        row_count += 1;
-    }
-
-    let tag = format!("SELECT {}", row_count);
-    response.extend_from_slice(&create_command_complete_response(&tag));
-
-    response
-}

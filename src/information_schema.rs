@@ -2,12 +2,13 @@ use crate::tables::{ColumnFilter, FilterOperator, QueryInfo, VirtualTable};
 use anyhow::Result;
 use std::collections::HashMap;
 
-pub fn handle_information_schema_query(query_info: &QueryInfo) -> Result<String> {
-    match query_info.table {
-        VirtualTable::InformationSchemaTables => generate_tables_response(query_info),
-        VirtualTable::InformationSchemaColumns => generate_columns_response(query_info),
+pub fn handle_information_schema_query(query_info: &QueryInfo) -> Result<crate::query_handler::QueryResult> {
+    let csv_result = match query_info.table {
+        VirtualTable::InformationSchemaTables => generate_tables_response(query_info)?,
+        VirtualTable::InformationSchemaColumns => generate_columns_response(query_info)?,
         _ => unreachable!(),
-    }
+    };
+    crate::query_handler::QueryResult::from_csv_string(&csv_result)
 }
 
 fn generate_tables_response(query_info: &QueryInfo) -> Result<String> {

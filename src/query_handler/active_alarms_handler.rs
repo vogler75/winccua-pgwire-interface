@@ -8,7 +8,7 @@ impl QueryHandler {
     pub(super) async fn execute_active_alarms_query(
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
-    ) -> Result<String> {
+    ) -> Result<super::QueryResult> {
         info!("🚨 Executing ActiveAlarms query");
 
         // Extract filter string if any
@@ -39,7 +39,7 @@ impl QueryHandler {
     pub(super) fn format_active_alarms_response(
         results: Vec<crate::graphql::types::ActiveAlarm>,
         query_info: &QueryInfo,
-    ) -> Result<String> {
+    ) -> Result<super::QueryResult> {
         let mut response = String::from(&Self::create_csv_header_with_types(query_info));
         let mut row_count = 0;
 
@@ -126,6 +126,6 @@ impl QueryHandler {
         }
 
         info!("📊 Formatted {} rows for ActiveAlarms query", row_count);
-        Ok(response)
+        Ok(super::QueryResult::from_csv_string(&response)?)
     }
 }
