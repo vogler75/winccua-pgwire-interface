@@ -5,8 +5,8 @@ use tracing::{info, warn};
 
 mod auth;
 mod graphql;
+mod pg_protocol;
 mod query_handler;
-mod simple_server;
 mod sql_handler;
 mod tables;
 
@@ -44,15 +44,20 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Get GraphQL URL from args or environment
-    let graphql_url = args.graphql_url
+    let graphql_url = args
+        .graphql_url
         .or_else(|| std::env::var("GRAPHQL_HTTP_URL").ok())
         .expect("GraphQL URL must be provided via --graphql-url or GRAPHQL_HTTP_URL environment variable");
 
     // Initialize logging
     let log_level = if args.debug { "debug" } else { "info" };
     tracing_subscriber::fmt()
-        .with_env_filter(format!("{}={},winccua_pgwire_protocol={}", 
-                               env!("CARGO_PKG_NAME").replace('-', "_"), log_level, log_level))
+        .with_env_filter(format!(
+            "{}={},winccua_pgwire_protocol={}",
+            env!("CARGO_PKG_NAME").replace('-', "_"),
+            log_level,
+            log_level
+        ))
         .init();
 
     info!("Starting WinCC UA PostgreSQL Wire Protocol Server");
@@ -77,11 +82,18 @@ async fn main() -> Result<()> {
     }
 
     // Check if no-auth mode is enabled
-    let no_auth_config = if let (Some(username), Some(password)) = (&args.no_auth_username, &args.no_auth_password) {
-        info!("🔓 No-auth mode enabled: using username '{}' for all connections", username);
+    let no_auth_config = if let (Some(username), Some(password)) =
+        (&args.no_auth_username, &args.no_auth_password)
+    {
+        info!(
+            "🔓 No-auth mode enabled: using username '{}' for all connections",
+            username
+        );
         Some((username.clone(), password.clone()))
     } else if args.no_auth_username.is_some() || args.no_auth_password.is_some() {
-        return Err(anyhow::anyhow!("Both --no-auth-username and --no-auth-password must be provided together"));
+        return Err(anyhow::anyhow!(
+            "Both --no-auth-username and --no-auth-password must be provided together"
+        ));
     } else {
         None
     };
@@ -89,7 +101,7 @@ async fn main() -> Result<()> {
     // For now, always use the simple server with improved PostgreSQL compatibility
     // The pgwire library API is too complex and has changed significantly
     info!("🐘 Starting PostgreSQL-compatible server (enhanced simple protocol)");
-    let server = simple_server::SimpleServer::new(graphql_url, no_auth_config);
+    let server = pg_protocol::PgProtocolServer::new(graphql_url, no_auth_config);
     server.start(args.bind_addr).await?;
 
     Ok(())
