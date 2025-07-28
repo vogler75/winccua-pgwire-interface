@@ -11,6 +11,20 @@ pub enum VirtualTable {
     InformationSchemaColumns,
 }
 
+impl ToString for VirtualTable {
+    fn to_string(&self) -> String {
+        match self {
+            VirtualTable::TagValues => "tagvalues".to_string(),
+            VirtualTable::LoggedTagValues => "loggedtagvalues".to_string(),
+            VirtualTable::ActiveAlarms => "activealarms".to_string(),
+            VirtualTable::LoggedAlarms => "loggedalarms".to_string(),
+            VirtualTable::TagList => "taglist".to_string(),
+            VirtualTable::InformationSchemaTables => "information_schema.tables".to_string(),
+            VirtualTable::InformationSchemaColumns => "information_schema.columns".to_string(),
+        }
+    }
+}
+
 impl VirtualTable {
     pub fn from_name(name: &str) -> Option<Self> {
         let lower_name = name.to_lowercase();
@@ -260,7 +274,6 @@ pub struct QueryInfo {
     pub filters: Vec<ColumnFilter>,
     pub limit: Option<i64>,
     pub order_by: Option<OrderBy>,
-    pub distinct: bool,
 }
 
 #[derive(Debug, Clone)]

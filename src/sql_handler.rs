@@ -47,8 +47,6 @@ impl SqlHandler {
                         None
                     }
                 });
-
-                let distinct = select.distinct.is_some();
                 
                 let query_info = QueryInfo {
                     table,
@@ -57,7 +55,6 @@ impl SqlHandler {
                     filters,
                     limit,
                     order_by,
-                    distinct,
                 };
 
                 Self::validate_query(&query_info)?;
@@ -87,36 +84,53 @@ impl SqlHandler {
     fn extract_columns(select: &Select, table: &VirtualTable) -> Result<(Vec<String>, std::collections::HashMap<String, String>)> {
         let mut columns = Vec::new();
         let mut column_mappings = std::collections::HashMap::new();
+        let is_datafusion_table = matches!(table, VirtualTable::TagValues | VirtualTable::TagList | VirtualTable::LoggedTagValues);
 
         for item in &select.projection {
             match item {
                 SelectItem::Wildcard(_) => {
                     columns.extend(table.get_column_names().iter().map(|s| s.to_string()));
                 }
-                SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
-                    let column_name = ident.value.clone();
-                    if !table.has_column(&column_name) {
-                        return Err(anyhow!("Unknown column: {}", column_name));
+                SelectItem::UnnamedExpr(expr) => {
+                    if is_datafusion_table {
+                        // For datafusion, we don't validate here. Just pass the expression string.
+                        columns.push(expr.to_string());
+                    } else {
+                        // For non-datafusion, maintain strict validation.
+                        if let Expr::Identifier(ident) = expr {
+                            let column_name = ident.value.clone();
+                            if !table.has_column(&column_name) {
+                                return Err(anyhow!("Unknown column: {}", column_name));
+                            }
+                            if !table.is_selectable_column(&column_name) {
+                                return Err(anyhow!("Column '{}' cannot be selected (virtual column)", column_name));
+                            }
+                            columns.push(column_name);
+                        } else {
+                            return Err(anyhow!("Complex expressions not supported for this table"));
+                        }
                     }
-                    if !table.is_selectable_column(&column_name) {
-                        return Err(anyhow!("Column '{}' cannot be selected (virtual column)", column_name));
-                    }
-                    columns.push(column_name);
                 }
                 SelectItem::ExprWithAlias { expr, alias } => {
-                    if let Expr::Identifier(ident) = expr {
-                        let column_name = ident.value.clone();
-                        if !table.has_column(&column_name) {
-                            return Err(anyhow!("Unknown column: {}", column_name));
-                        }
-                        if !table.is_selectable_column(&column_name) {
-                            return Err(anyhow!("Column '{}' cannot be selected (virtual column)", column_name));
-                        }
+                    if is_datafusion_table {
                         let alias_name = alias.value.clone();
                         columns.push(alias_name.clone());
-                        column_mappings.insert(alias_name, column_name);
+                        column_mappings.insert(alias_name, expr.to_string());
                     } else {
-                        return Err(anyhow!("Complex expressions in SELECT are not supported"));
+                        if let Expr::Identifier(ident) = expr {
+                            let column_name = ident.value.clone();
+                            if !table.has_column(&column_name) {
+                                return Err(anyhow!("Unknown column: {}", column_name));
+                            }
+                            if !table.is_selectable_column(&column_name) {
+                                return Err(anyhow!("Column '{}' cannot be selected (virtual column)", column_name));
+                            }
+                            let alias_name = alias.value.clone();
+                            columns.push(alias_name.clone());
+                            column_mappings.insert(alias_name, column_name);
+                        } else {
+                            return Err(anyhow!("Complex expressions in SELECT are not supported"));
+                        }
                     }
                 }
                 _ => return Err(anyhow!("Unsupported SELECT item")),

@@ -130,40 +130,6 @@ impl QueryHandler {
         None
     }
 
-    pub(super) fn convert_timestamp_to_ms_epoch(timestamp_str: &str) -> String {
-        // Try to parse the timestamp string and convert to milliseconds since epoch
-        // First try parsing as ISO 8601 format (most common)
-        if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp_str) {
-            return dt.timestamp_millis().to_string();
-        }
-
-        // Try parsing without timezone (assume UTC)
-        if let Ok(dt) = timestamp_str.parse::<DateTime<Utc>>() {
-            return dt.timestamp_millis().to_string();
-        }
-
-        // If parsing fails, try some common formats
-        for format in &[
-            "%Y-%m-%dT%H:%M:%S%.fZ",
-            "%Y-%m-%dT%H:%M:%SZ",
-            "%Y-%m-%d %H:%M:%S%.f",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S%.f%z",
-            "%Y-%m-%dT%H:%M:%S%z",
-        ] {
-            if let Ok(dt) = DateTime::parse_from_str(timestamp_str, format) {
-                return dt.timestamp_millis().to_string();
-            }
-        }
-
-        // If all parsing attempts fail, return 0
-        warn!(
-            "Failed to parse timestamp '{}' for ms conversion, using 0",
-            timestamp_str
-        );
-        "0".to_string()
-    }
-
     pub(super) fn convert_timestamp_to_postgres_format(timestamp_str: &str) -> String {
         // GraphQL returns UTC timestamps - format as TIMESTAMP (without timezone)
         // PostgreSQL TIMESTAMP format: YYYY-MM-DD HH:MM:SS.ssssss (no timezone)

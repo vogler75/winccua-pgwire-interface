@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use tracing::{info, warn};
 
 mod auth;
+mod datafusion_handler;
 mod graphql;
 mod information_schema;
 mod pg_protocol;
