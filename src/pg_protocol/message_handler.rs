@@ -10,6 +10,7 @@ use super::{
         create_empty_row_description_response,
         create_parameter_description_response, create_parse_complete_response,
         create_ready_for_query_response, create_row_description_response,
+        create_row_description_response_with_types,
     },
     ConnectionState, Portal, PreparedStatement,
 };
@@ -49,7 +50,7 @@ pub(super) async fn handle_postgres_message(
         b'P' => handle_parse_message(payload, connection_state).await,
         b'B' => handle_bind_message(payload, connection_state).await,
         b'E' => handle_execute_message(payload, connection_state, session).await,
-        b'D' => handle_describe_message(payload, connection_state).await,
+        b'D' => handle_describe_message(payload, connection_state, session).await,
         b'C' => handle_close_message(payload, connection_state).await,
         b'S' => handle_sync_message().await,
         b'X' => handle_terminate_message().await,
@@ -346,6 +347,7 @@ async fn handle_execute_message(
 async fn handle_describe_message(
     payload: &[u8],
     connection_state: &ConnectionState,
+    session: &crate::auth::AuthenticatedSession,
 ) -> Result<Vec<u8>> {
     if payload.is_empty() {
         return Err(anyhow!("Empty describe message"));
@@ -376,15 +378,26 @@ async fn handle_describe_message(
                     && !super::query_execution::is_transaction_control_statement(&trimmed_query)
                     && !super::query_execution::is_utility_statement(&trimmed_query)
                 {
-                    match SqlHandler::parse_query(&statement.query) {
-                        Ok(SqlResult::Query(query_info)) => {
-                            tracing::info!("🚀 Describe message: Generating RowDescription for Extended Query");
-                            response.extend_from_slice(&create_row_description_response(&query_info));
+                    // Execute the query to get proper column types (like Execute message does)
+                    tracing::info!("🚀 Describe message: Executing query to get proper column types");
+                    match crate::query_handler::QueryHandler::execute_query(&statement.query, session).await {
+                        Ok(query_result) => {
+                            tracing::info!("🚀 Describe message: Generated QueryResult with {} columns and proper OIDs", query_result.columns.len());
+                            response.extend_from_slice(&create_row_description_response_with_types(&query_result));
                         }
-                        _ => {
-                            // For non-SELECT statements, send NoData
-                            response.push(b'n'); // NoData message
-                            response.extend_from_slice(&4u32.to_be_bytes()); // Length: 4
+                        Err(e) => {
+                            tracing::warn!("🚀 Describe message: Query execution failed, falling back to schema-based types: {}", e);
+                            // Fallback to parsing only if execution fails
+                            match SqlHandler::parse_query(&statement.query) {
+                                Ok(SqlResult::Query(query_info)) => {
+                                    response.extend_from_slice(&create_row_description_response(&query_info));
+                                }
+                                _ => {
+                                    // For non-SELECT statements, send NoData
+                                    response.push(b'n'); // NoData message
+                                    response.extend_from_slice(&4u32.to_be_bytes()); // Length: 4
+                                }
+                            }
                         }
                     }
                 } else {
@@ -411,17 +424,28 @@ async fn handle_describe_message(
                         return Ok(create_empty_row_description_response());
                     }
                     
-                    // For SELECT queries, parse and generate proper row description
-                    match SqlHandler::parse_query(&statement.query) {
-                        Ok(SqlResult::Query(query_info)) => {
-                            Ok(create_row_description_response(&query_info))
+                    // For SELECT queries, execute the query to get proper column types
+                    tracing::info!("🚀 Portal Describe: Executing query to get proper column types");
+                    match crate::query_handler::QueryHandler::execute_query(&statement.query, session).await {
+                        Ok(query_result) => {
+                            tracing::info!("🚀 Portal Describe: Generated QueryResult with {} columns and proper OIDs", query_result.columns.len());
+                            Ok(create_row_description_response_with_types(&query_result))
                         }
-                        Ok(SqlResult::SetStatement(_)) => {
-                            Ok(create_empty_row_description_response())
-                        }
-                        Err(_) => {
-                            // Fallback to empty row description if parsing fails
-                            Ok(create_empty_row_description_response())
+                        Err(e) => {
+                            tracing::warn!("🚀 Portal Describe: Query execution failed, falling back to schema-based types: {}", e);
+                            // Fallback to parsing only if execution fails
+                            match SqlHandler::parse_query(&statement.query) {
+                                Ok(SqlResult::Query(query_info)) => {
+                                    Ok(create_row_description_response(&query_info))
+                                }
+                                Ok(SqlResult::SetStatement(_)) => {
+                                    Ok(create_empty_row_description_response())
+                                }
+                                Err(_) => {
+                                    // Fallback to empty row description if parsing fails
+                                    Ok(create_empty_row_description_response())
+                                }
+                            }
                         }
                     }
                 } else {

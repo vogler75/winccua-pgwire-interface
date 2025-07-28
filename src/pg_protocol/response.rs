@@ -335,6 +335,54 @@ pub(super) fn format_as_extended_query_result(csv_data: &str, query_info: &crate
     response
 }
 
+/// Create RowDescription using QueryResult with proper column types (preferred for Extended Query Protocol)
+pub(super) fn create_row_description_response_with_types(query_result: &crate::query_handler::QueryResult) -> Vec<u8> {
+    let mut response = Vec::new();
+    tracing::info!("🚀 create_row_description_response_with_types() CALLED with {} columns", query_result.columns.len());
+    tracing::info!("🚀 Column types (OIDs): {:?}", query_result.column_types);
+    response.push(b'T'); // 'T' = RowDescription message type
+
+    let mut fields_data = Vec::new();
+    fields_data.extend_from_slice(&(query_result.columns.len() as u16).to_be_bytes());
+
+    for (i, header) in query_result.columns.iter().enumerate() {
+        fields_data.extend_from_slice(header.as_bytes());
+        fields_data.push(0); // Null terminator for name
+
+        // Add dummy table/column IDs
+        fields_data.extend_from_slice(&0u32.to_be_bytes()); // Table OID
+        fields_data.extend_from_slice(&(i as u16).to_be_bytes()); // Column index
+
+        // Use the pre-computed PostgreSQL OID from QueryResult
+        let type_oid: u32 = if i < query_result.column_types.len() {
+            query_result.column_types[i]
+        } else {
+            25 // TEXT default
+        };
+        tracing::info!("🚀 create_row_description_response_with_types: Column '{}' -> PostgreSQL OID {} ({})", 
+            header, type_oid, postgres_type_name(type_oid));
+        fields_data.extend_from_slice(&type_oid.to_be_bytes()); // Data type OID
+
+        // Add type size (-1 for variable size)
+        let type_size: i16 = -1;
+        fields_data.extend_from_slice(&type_size.to_be_bytes());
+
+        // Add type modifier (-1 for default)
+        let type_modifier: i32 = -1;
+        fields_data.extend_from_slice(&type_modifier.to_be_bytes());
+
+        // Add format code (0 for text)
+        let format_code: i16 = 0;
+        fields_data.extend_from_slice(&format_code.to_be_bytes());
+    }
+
+    let length = 4 + fields_data.len();
+    response.extend_from_slice(&(length as u32).to_be_bytes());
+    response.extend_from_slice(&fields_data);
+    response
+}
+
+/// Create RowDescription using QueryInfo (fallback for when QueryResult is not available)
 pub(super) fn create_row_description_response(query_info: &crate::tables::QueryInfo) -> Vec<u8> {
     let mut response = Vec::new();
     tracing::info!("🚀 create_row_description_response() CALLED with {} columns", query_info.columns.len());
@@ -507,13 +555,11 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
                 }
                 crate::query_handler::QueryValue::Integer(i) => {
                     let s = i.to_string();
-                    tracing::debug!("🔧 Sending integer {} as text: '{}'", i, s);
                     row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
                     row_data.extend_from_slice(s.as_bytes());
                 }
                 crate::query_handler::QueryValue::Float(f) => {
                     let s = f.to_string();
-                    tracing::debug!("🔧 Sending float {} as text: '{}'", f, s);
                     row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
                     row_data.extend_from_slice(s.as_bytes());
                 }
@@ -585,13 +631,11 @@ pub(super) fn format_query_result_as_extended_query_result(result: &crate::query
                 }
                 crate::query_handler::QueryValue::Integer(i) => {
                     let s = i.to_string();
-                    tracing::debug!("🔧 Sending integer {} as text: '{}'", i, s);
                     row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
                     row_data.extend_from_slice(s.as_bytes());
                 }
                 crate::query_handler::QueryValue::Float(f) => {
                     let s = f.to_string();
-                    tracing::debug!("🔧 Sending float {} as text: '{}'", f, s);
                     row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
                     row_data.extend_from_slice(s.as_bytes());
                 }
