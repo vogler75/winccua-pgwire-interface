@@ -153,6 +153,39 @@ CREATE TABLE tag_list (
 );
 ```
 
+## Advanced SQL Queries with DataFusion
+
+This server leverages **Apache DataFusion** as an in-memory query engine to provide powerful SQL capabilities on top of the data fetched from the GraphQL API. This allows for complex queries, including aggregations, `GROUP BY`, `ORDER BY`, and advanced filtering directly on the live industrial data.
+
+The query process is as follows:
+1.  The SQL query is parsed.
+2.  A request is sent to the GraphQL API to fetch the relevant raw data.
+3.  This data is loaded into an in-memory table managed by DataFusion.
+4.  The original SQL query is executed against this in-memory table, enabling the full power of SQL.
+
+### DataFusion Example Queries
+
+Here are some examples of complex queries that are now supported for the `taglist`, `tagvalues`, and `loggedtagvalues` tables:
+
+```sql
+-- Find all tags where the display name contains '::PV'
+select * from taglist where display_name like '%::%PV%';
+
+-- Count tags by their object type
+select object_type, count(*) from taglist where display_name like '%:%PV%' group by object_type;
+
+-- Calculate the sum of numeric values for a group of tags
+select sum(numeric_value) from tagvalues where tag_name like '%HMI_Tag_%' ;
+
+-- Filter logged values by timestamp and quality
+select * from loggedtagvalues where timestamp > '2025-07-27T14:00:00Z' and tag_name like '%::HMI_Tag_%:LoggingTag_1' and quality = 'GOOD_CASCADE';
+
+-- Get aggregate values (min, max, avg) for a specific tag over a time range
+select tag_name, min(numeric_value), max(numeric_value), avg(numeric_value) 
+from loggedtagvalues where timestamp > '2025-07-27T14:00:00Z' and tag_name like '%::HMI_Tag_%:LoggingTag_1' and quality = 'GOOD_CASCADE' 
+group by tag_name;
+```
+
 ## Example Queries
 
 ```sql
