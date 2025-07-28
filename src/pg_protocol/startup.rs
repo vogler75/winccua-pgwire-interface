@@ -638,9 +638,9 @@ pub(super) async fn handle_postgres_startup(
                 }
             };
 
-        // Now try to handle simple queries
+        // Main query processing loop
         info!("🔄 Starting PostgreSQL query loop for {}", peer_addr);
-        let mut buffer = [0; 4096];
+        let mut buffer = vec![0; 4096];
 
         loop {
             debug!("📖 Waiting for PostgreSQL query from {}", peer_addr);
@@ -656,35 +656,66 @@ pub(super) async fn handle_postgres_startup(
                 n, peer_addr
             );
 
-            // Handle PostgreSQL messages (both Simple and Extended Query Protocol)
-            match handle_postgres_message(&buffer[..n], &mut connection_state, &authenticated_session).await {
-                Ok(response) => {
-                    if !response.is_empty() {
-                        debug!("📤 Sending PostgreSQL response to {} ({} bytes)", peer_addr, response.len());
-                        socket.write_all(&response).await?;
+            let mut pos = 0;
+            let mut response_buffer = Vec::new();
+            while pos < n {
+                let message_slice = &buffer[pos..n];
+                if message_slice.len() < 5 {
+                    // Not enough data for a full message header
+                    break;
+                }
+
+                let message_len = u32::from_be_bytes([
+                    message_slice[1],
+                    message_slice[2],
+                    message_slice[3],
+                    message_slice[4],
+                ]) as usize;
+                
+                let total_message_len = 1 + message_len;
+
+                if message_slice.len() < total_message_len {
+                    // Incomplete message in the buffer
+                    break;
+                }
+
+                match handle_postgres_message(
+                    &message_slice[..total_message_len],
+                    &mut connection_state,
+                    &authenticated_session,
+                )
+                .await
+                {
+                    Ok(response) => {
+                        if !response.is_empty() {
+                            response_buffer.extend_from_slice(&response);
+                        }
+                    }
+                    Err(e) => {
+                        if e.to_string() == "TERMINATE_CONNECTION" {
+                            info!("👋 Client {} requested connection termination", peer_addr);
+                            return Ok(());
+                        } else {
+                            error!("❌ Message processing error for {}: {}", peer_addr, e);
+                            let mut error_response = create_postgres_error_response(
+                                "42000",
+                                &format!("Query failed: {}", e),
+                            );
+                            error_response.extend_from_slice(&super::response::create_ready_for_query_response());
+                            response_buffer.extend_from_slice(&error_response);
+                        }
                     }
                 }
-                Err(e) => {
-                    // Check if this is a terminate request
-                    if e.to_string() == "TERMINATE_CONNECTION" {
-                        info!("👋 Client {} requested connection termination", peer_addr);
-                        break; // Exit the query loop gracefully
-                    } else if e.to_string() == "INCOMPLETE_MESSAGE" {
-                        // Incomplete message is normal, just continue waiting for more data
-                        debug!("📨 Incomplete message from {}, waiting for more data", peer_addr);
-                        continue;
-                    } else {
-                        error!("❌ Message processing error for {}: {}", peer_addr, e);
-                        let mut error_response = create_postgres_error_response("42000", &format!("Query failed: {}", e));
+                pos += total_message_len;
+            }
 
-                        // Add ready-for-query message after error to prevent client hang
-                        error_response.push(b'Z');
-                        error_response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
-                        error_response.push(b'I'); // Status: 'I' = idle
-
-                        socket.write_all(&error_response).await?;
-                    }
-                }
+            if !response_buffer.is_empty() {
+                debug!(
+                    "📤 Sending PostgreSQL response to {} ({} bytes)",
+                    peer_addr,
+                    response_buffer.len()
+                );
+                socket.write_all(&response_buffer).await?;
             }
         }
     } else {

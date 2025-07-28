@@ -1,9 +1,22 @@
+use crate::pg_protocol::response::{create_command_complete_response, format_as_postgres_result};
 use anyhow::{anyhow, Result};
 use tracing::{debug, info, warn};
 
-use super::{query_execution::handle_simple_query, response::{create_bind_complete_response, create_close_complete_response, create_command_complete_response, create_empty_row_description_response, create_parameter_description_response, create_parse_complete_response, create_ready_for_query_response, format_as_postgres_result}, ConnectionState, PreparedStatement, Portal};
+use super::{
+    query_execution::handle_simple_query,
+    response::{
+        create_bind_complete_response, create_close_complete_response,
+        create_empty_row_description_response, create_parameter_description_response,
+        create_parse_complete_response, create_ready_for_query_response,
+    },
+    ConnectionState, Portal, PreparedStatement,
+};
 
-pub(super) async fn handle_postgres_message(data: &[u8], connection_state: &mut ConnectionState, session: &crate::auth::AuthenticatedSession) -> Result<Vec<u8>> {
+pub(super) async fn handle_postgres_message(
+    data: &[u8],
+    connection_state: &mut ConnectionState,
+    session: &crate::auth::AuthenticatedSession,
+) -> Result<Vec<u8>> {
     if data.len() < 5 {
         return Err(anyhow!("Message too short"));
     }
@@ -18,7 +31,16 @@ pub(super) async fn handle_postgres_message(data: &[u8], connection_state: &mut 
 
     let payload = &data[5..5 + length - 4];
 
-    debug!("📨 Processing PostgreSQL message type: '{}' (0x{:02X}), length: {}", if message_type.is_ascii_graphic() { message_type as char } else { '?' }, message_type, length);
+    debug!(
+        "📨 Processing PostgreSQL message type: '{}' (0x{:02X}), length: {}",
+        if message_type.is_ascii_graphic() {
+            message_type as char
+        } else {
+            '?'
+        },
+        message_type,
+        length
+    );
 
     match message_type {
         b'Q' => handle_simple_query_message(payload, session).await,
@@ -30,14 +52,27 @@ pub(super) async fn handle_postgres_message(data: &[u8], connection_state: &mut 
         b'S' => handle_sync_message().await,
         b'X' => handle_terminate_message().await,
         _ => {
-            warn!("❓ Unsupported PostgreSQL message type: '{}' (0x{:02X})", if message_type.is_ascii_graphic() { message_type as char } else { '?' }, message_type);
+            warn!(
+                "❓ Unsupported PostgreSQL message type: '{}' (0x{:02X})",
+                if message_type.is_ascii_graphic() {
+                    message_type as char
+                } else {
+                    '?'
+                },
+                message_type
+            );
             Err(anyhow!("Unsupported message type: 0x{:02X}", message_type))
         }
     }
 }
 
-async fn handle_simple_query_message(payload: &[u8], session: &crate::auth::AuthenticatedSession) -> Result<Vec<u8>> {
-    let query_str = std::str::from_utf8(payload).map_err(|_| anyhow!("Invalid UTF-8 in query"))?.trim_end_matches('\0');
+async fn handle_simple_query_message(
+    payload: &[u8],
+    session: &crate::auth::AuthenticatedSession,
+) -> Result<Vec<u8>> {
+    let query_str = std::str::from_utf8(payload)
+        .map_err(|_| anyhow!("Invalid UTF-8 in query"))?
+        .trim_end_matches('\0');
 
     info!("📥 Simple Query: {}", query_str.trim());
 
@@ -47,7 +82,10 @@ async fn handle_simple_query_message(payload: &[u8], session: &crate::auth::Auth
     }
 }
 
-async fn handle_parse_message(payload: &[u8], connection_state: &mut ConnectionState) -> Result<Vec<u8>> {
+async fn handle_parse_message(
+    payload: &[u8],
+    connection_state: &mut ConnectionState,
+) -> Result<Vec<u8>> {
     let mut pos = 0;
 
     // Extract statement name (null-terminated string)
@@ -69,18 +107,47 @@ async fn handle_parse_message(payload: &[u8], connection_state: &mut ConnectionS
         if pos + 4 > payload.len() {
             return Err(anyhow!("Incomplete parameter types"));
         }
-        let oid = u32::from_be_bytes([payload[pos], payload[pos + 1], payload[pos + 2], payload[pos + 3]]);
+        let oid = u32::from_be_bytes([
+            payload[pos],
+            payload[pos + 1],
+            payload[pos + 2],
+            payload[pos + 3],
+        ]);
         parameter_types.push(oid);
         pos += 4;
     }
 
-    info!("📋 Parse: statement='{}', query='{}', params={}", statement_name, query.trim(), param_count);
+    info!(
+        "📋 Parse: statement='{}', query='{}', params={}",
+        statement_name,
+        query.trim(),
+        param_count
+    );
+
+    // For SET statements, we don't need to validate further.
+    if query.trim().to_uppercase().starts_with("SET") {
+        info!("📋 Parse: accepting SET statement: {}", query.trim());
+        let prepared_stmt = PreparedStatement {
+            name: statement_name.clone(),
+            query: query.clone(),
+            parameter_types,
+        };
+        connection_state
+            .prepared_statements
+            .insert(statement_name, prepared_stmt);
+        return Ok(create_parse_complete_response());
+    }
 
     let trimmed_query = query.trim().to_uppercase();
 
     // Check if this is a transaction control or utility statement that should be allowed
-    if super::query_execution::is_transaction_control_statement(&trimmed_query) || super::query_execution::is_utility_statement(&trimmed_query) {
-        info!("📋 Parse: accepting transaction/utility statement: {}", query.trim());
+    if super::query_execution::is_transaction_control_statement(&trimmed_query)
+        || super::query_execution::is_utility_statement(&trimmed_query)
+    {
+        info!(
+            "📋 Parse: accepting transaction/utility statement: {}",
+            query.trim()
+        );
 
         // Store the prepared statement even though it's a utility statement
         let prepared_stmt = PreparedStatement {
@@ -88,7 +155,9 @@ async fn handle_parse_message(payload: &[u8], connection_state: &mut ConnectionS
             query: query.clone(),
             parameter_types,
         };
-        connection_state.prepared_statements.insert(statement_name, prepared_stmt);
+        connection_state
+            .prepared_statements
+            .insert(statement_name, prepared_stmt);
 
         return Ok(create_parse_complete_response());
     }
@@ -102,7 +171,9 @@ async fn handle_parse_message(payload: &[u8], connection_state: &mut ConnectionS
                 query: query.clone(),
                 parameter_types,
             };
-            connection_state.prepared_statements.insert(statement_name, prepared_stmt);
+            connection_state
+                .prepared_statements
+                .insert(statement_name, prepared_stmt);
 
             // Send ParseComplete response
             Ok(create_parse_complete_response())
@@ -113,14 +184,21 @@ async fn handle_parse_message(payload: &[u8], connection_state: &mut ConnectionS
             warn!("❌ Unsupported query: {}", query.trim());
 
             // Return a more descriptive error for common unsupported statements
-            let error_msg = if query.trim().to_uppercase().starts_with("SET ") { format!("SET statements are not supported. Query: {}", query.trim()) } else { format!("Unsupported or invalid SQL statement: {}", e) };
+            let error_msg = if query.trim().to_uppercase().starts_with("SET ") {
+                format!("SET statements are not supported. Query: {}", query.trim())
+            } else {
+                format!("Unsupported or invalid SQL statement: {}", e)
+            };
 
             Err(anyhow!("{}", error_msg))
         }
     }
 }
 
-async fn handle_bind_message(payload: &[u8], connection_state: &mut ConnectionState) -> Result<Vec<u8>> {
+async fn handle_bind_message(
+    payload: &[u8],
+    connection_state: &mut ConnectionState,
+) -> Result<Vec<u8>> {
     let mut pos = 0;
 
     // Extract portal name
@@ -152,7 +230,12 @@ async fn handle_bind_message(payload: &[u8], connection_state: &mut ConnectionSt
         if pos + 4 > payload.len() {
             return Err(anyhow!("Incomplete parameter length"));
         }
-        let param_length = i32::from_be_bytes([payload[pos], payload[pos + 1], payload[pos + 2], payload[pos + 3]]);
+        let param_length = i32::from_be_bytes([
+            payload[pos],
+            payload[pos + 1],
+            payload[pos + 2],
+            payload[pos + 3],
+        ]);
         pos += 4;
 
         if param_length == -1 {
@@ -163,13 +246,18 @@ async fn handle_bind_message(payload: &[u8], connection_state: &mut ConnectionSt
             if pos + param_length > payload.len() {
                 return Err(anyhow!("Incomplete parameter value"));
             }
-            let param_value = std::str::from_utf8(&payload[pos..pos + param_length]).map_err(|_| anyhow!("Invalid UTF-8 in parameter"))?.to_string();
+            let param_value = std::str::from_utf8(&payload[pos..pos + param_length])
+                .map_err(|_| anyhow!("Invalid UTF-8 in parameter"))?
+                .to_string();
             parameters.push(Some(param_value));
             pos += param_length;
         }
     }
 
-    info!("🔗 Bind: portal='{}', statement='{}', params={:?}", portal_name, statement_name, parameters);
+    info!(
+        "🔗 Bind: portal='{}', statement='{}', params={:?}",
+        portal_name, statement_name, parameters
+    );
 
     // Store the portal
     let portal = Portal {
@@ -183,7 +271,11 @@ async fn handle_bind_message(payload: &[u8], connection_state: &mut ConnectionSt
     Ok(create_bind_complete_response())
 }
 
-async fn handle_execute_message(payload: &[u8], connection_state: &ConnectionState, session: &crate::auth::AuthenticatedSession) -> Result<Vec<u8>> {
+async fn handle_execute_message(
+    payload: &[u8],
+    connection_state: &ConnectionState,
+    session: &crate::auth::AuthenticatedSession,
+) -> Result<Vec<u8>> {
     let mut pos = 0;
 
     // Extract portal name
@@ -193,15 +285,26 @@ async fn handle_execute_message(payload: &[u8], connection_state: &ConnectionSta
     if pos + 4 > payload.len() {
         return Err(anyhow!("Incomplete execute message"));
     }
-    let _max_rows = u32::from_be_bytes([payload[pos], payload[pos + 1], payload[pos + 2], payload[pos + 3]]);
+    let _max_rows = u32::from_be_bytes([
+        payload[pos],
+        payload[pos + 1],
+        payload[pos + 2],
+        payload[pos + 3],
+    ]);
 
     info!("⚡ Execute: portal='{}'", portal_name);
 
     // Get the portal
-    let portal = connection_state.portals.get(&portal_name).ok_or_else(|| anyhow!("Portal '{}' not found", portal_name))?;
+    let portal = connection_state
+        .portals
+        .get(&portal_name)
+        .ok_or_else(|| anyhow!("Portal '{}' not found", portal_name))?;
 
     // Get the prepared statement
-    let statement = connection_state.prepared_statements.get(&portal.statement_name).ok_or_else(|| anyhow!("Statement '{}' not found", portal.statement_name))?;
+    let statement = connection_state
+        .prepared_statements
+        .get(&portal.statement_name)
+        .ok_or_else(|| anyhow!("Statement '{}' not found", portal.statement_name))?;
 
     // Substitute parameters in the query
     let final_query = substitute_parameters(&statement.query, &portal.parameters)?;
@@ -211,24 +314,30 @@ async fn handle_execute_message(payload: &[u8], connection_state: &ConnectionSta
     // Execute the query
     match handle_simple_query(&final_query, session).await {
         Ok(response) => {
-            let mut result = format_as_postgres_result(&response);
-            // Add CommandComplete message
-            result.extend_from_slice(&create_command_complete_response("SELECT"));
+            let result = format_as_extended_query_result(&response);
             Ok(result)
         }
         Err(e) => Err(e),
     }
 }
 
-async fn handle_describe_message(payload: &[u8], connection_state: &ConnectionState) -> Result<Vec<u8>> {
+async fn handle_describe_message(
+    payload: &[u8],
+    connection_state: &ConnectionState,
+) -> Result<Vec<u8>> {
     if payload.is_empty() {
         return Err(anyhow!("Empty describe message"));
     }
 
     let object_type = payload[0];
-    let object_name = std::str::from_utf8(&payload[1..]).map_err(|_| anyhow!("Invalid UTF-8 in describe message"))?.trim_end_matches('\0');
+    let object_name = std::str::from_utf8(&payload[1..])
+        .map_err(|_| anyhow!("Invalid UTF-8 in describe message"))?
+        .trim_end_matches('\0');
 
-    info!("📄 Describe: type='{}', name='{}'", object_type as char, object_name);
+    info!(
+        "📄 Describe: type='{}', name='{}'",
+        object_type as char, object_name
+    );
 
     match object_type {
         b'S' => {
@@ -251,15 +360,23 @@ async fn handle_describe_message(payload: &[u8], connection_state: &ConnectionSt
     }
 }
 
-async fn handle_close_message(payload: &[u8], connection_state: &mut ConnectionState) -> Result<Vec<u8>> {
+async fn handle_close_message(
+    payload: &[u8],
+    connection_state: &mut ConnectionState,
+) -> Result<Vec<u8>> {
     if payload.is_empty() {
         return Err(anyhow!("Empty close message"));
     }
 
     let object_type = payload[0];
-    let object_name = std::str::from_utf8(&payload[1..]).map_err(|_| anyhow!("Invalid UTF-8 in close message"))?.trim_end_matches('\0');
+    let object_name = std::str::from_utf8(&payload[1..])
+        .map_err(|_| anyhow!("Invalid UTF-8 in close message"))?
+        .trim_end_matches('\0');
 
-    info!("🔒 Close: type='{}', name='{}'", object_type as char, object_name);
+    info!(
+        "🔒 Close: type='{}', name='{}'",
+        object_type as char, object_name
+    );
 
     match object_type {
         b'S' => {
@@ -309,7 +426,106 @@ fn extract_null_terminated_string<'a>(payload: &'a [u8], pos: &mut usize) -> Res
     if *pos >= payload.len() {
         return Err(anyhow!("Incomplete null-terminated string"));
     }
-    let result = std::str::from_utf8(&payload[start..*pos]).map_err(|_| anyhow!("Invalid UTF-8 in string"))?.to_string();
+    let result = std::str::from_utf8(&payload[start..*pos])
+        .map_err(|_| anyhow!("Invalid UTF-8 in string"))?
+        .to_string();
     *pos += 1; // Skip null terminator
     Ok(result)
+}
+
+fn format_as_extended_query_result(csv_data: &str) -> Vec<u8> {
+    let mut response = Vec::new();
+
+    if csv_data.starts_with("COMMAND_COMPLETE:") {
+        let command_tag = csv_data.strip_prefix("COMMAND_COMPLETE:").unwrap_or("OK");
+        response.extend_from_slice(&create_command_complete_response(command_tag));
+        return response;
+    }
+
+    if csv_data.trim() == "EMPTY_QUERY_RESPONSE" {
+        response.extend_from_slice(&create_command_complete_response(""));
+        return response;
+    }
+
+    let lines: Vec<&str> = csv_data.trim().split('\n').collect();
+    if lines.is_empty() {
+        response.extend_from_slice(&create_command_complete_response(""));
+        return response;
+    }
+
+    let headers: Vec<&str> = lines[0].split(',').collect();
+    let mut column_types: std::collections::HashMap<String, &str> =
+        std::collections::HashMap::new();
+    let mut clean_headers: Vec<String> = Vec::new();
+
+    for header in &headers {
+        if header.contains(':') {
+            let parts: Vec<&str> = header.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                clean_headers.push(parts[0].to_string());
+                column_types.insert(parts[0].to_string(), parts[1]);
+            } else {
+                clean_headers.push(header.to_string());
+            }
+        } else {
+            clean_headers.push(header.to_string());
+        }
+    }
+
+    response.push(b'T');
+
+    let mut fields_data = Vec::new();
+    fields_data.extend_from_slice(&(clean_headers.len() as u16).to_be_bytes());
+
+    for (i, header) in clean_headers.iter().enumerate() {
+        fields_data.extend_from_slice(header.as_bytes());
+        fields_data.push(0);
+        fields_data.extend_from_slice(&0u32.to_be_bytes());
+        fields_data.extend_from_slice(&(i as u16).to_be_bytes());
+        let type_oid: u32 = match column_types.get(header.as_str()).unwrap_or(&"TEXT") {
+            &"NUMERIC" => 1700,
+            &"TIMESTAMP" => 1114,
+            &"TEXT" => 25,
+            _ => 25,
+        };
+        fields_data.extend_from_slice(&type_oid.to_be_bytes());
+        let type_size: i16 = -1;
+        fields_data.extend_from_slice(&type_size.to_be_bytes());
+        let type_modifier: i32 = -1;
+        fields_data.extend_from_slice(&type_modifier.to_be_bytes());
+        let format_code: i16 = 0;
+        fields_data.extend_from_slice(&format_code.to_be_bytes());
+    }
+
+    let length = 4 + fields_data.len();
+    response.extend_from_slice(&(length as u32).to_be_bytes());
+    response.extend_from_slice(&fields_data);
+
+    let mut row_count = 0;
+    for line in lines.iter().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        response.push(b'D');
+        let values: Vec<&str> = line.split(',').collect();
+        let mut row_data = Vec::new();
+        row_data.extend_from_slice(&(values.len() as u16).to_be_bytes());
+        for value in values {
+            if value == "NULL" {
+                row_data.extend_from_slice(&(-1i32).to_be_bytes());
+            } else {
+                row_data.extend_from_slice(&(value.len() as u32).to_be_bytes());
+                row_data.extend_from_slice(value.as_bytes());
+            }
+        }
+        let length = 4 + row_data.len();
+        response.extend_from_slice(&(length as u32).to_be_bytes());
+        response.extend_from_slice(&row_data);
+        row_count += 1;
+    }
+
+    let tag = format!("SELECT {}", row_count);
+    response.extend_from_slice(&create_command_complete_response(&tag));
+
+    response
 }

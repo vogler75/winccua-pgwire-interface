@@ -172,26 +172,21 @@ fn generate_columns_response(query_info: &QueryInfo) -> Result<String> {
 
 fn apply_filters(row: &HashMap<String, String>, filters: &[ColumnFilter]) -> bool {
     for filter in filters {
-        let Some(value) = row.get(&filter.column) else {
-            // If a filter is on a column that doesn't exist, the row doesn't match.
-            return false;
-        };
-
-        match filter.operator {
-            FilterOperator::Equal => {
-                if let Some(filter_value) = filter.value.as_string() {
-                    if value != filter_value {
+        if let Some(value) = row.get(&filter.column) {
+            match filter.operator {
+                FilterOperator::Equal => {
+                    if let Some(filter_value) = filter.value.as_string() {
+                        if value != filter_value {
+                            return false;
+                        }
+                    } else {
+                        // Type mismatch, filter fails
                         return false;
                     }
-                } else {
-                    // Type mismatch, filter fails
-                    return false;
                 }
-            }
-            _ => {
-                // For this context, we only support equality filters.
-                // Any other operator will cause the filter to fail.
-                return false;
+                _ => {
+                    // For now, only support simple equality filters
+                }
             }
         }
     }
