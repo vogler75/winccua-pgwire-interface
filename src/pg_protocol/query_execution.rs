@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 fn create_command_complete_response_text(command_tag: &str) -> String {
     // For Simple Query protocol, we return a text response that will be formatted later
@@ -56,6 +56,11 @@ pub(super) async fn handle_simple_query(
         let query_without_semicolon = trimmed_query.trim_end_matches(';').trim();
         if query_without_semicolon == "SELECT 1" {
             info!("🔍 Returning data for SELECT 1");
+            // This is often used as a keep-alive, so we'll extend the session.
+            match session.client.extend_session(&session.token).await {
+                Ok(_) => debug!("Session extended successfully"),
+                Err(e) => warn!("Failed to extend session: {}", e),
+            }
             return Ok("?column?\n1".to_string());
         } else if query_without_semicolon == "SELECT TRUE" {
             info!("🔍 Returning data for SELECT TRUE");

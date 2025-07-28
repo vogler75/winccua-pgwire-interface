@@ -318,3 +318,16 @@ pub struct BrowseResult {
     #[serde(rename = "dataType")]
     pub data_type: Option<String>,
 }
+
+// Extend Session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtendSessionResponse {
+    pub data: Option<ExtendSessionData>,
+    pub errors: Option<Vec<GraphQLError>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtendSessionData {
+    #[serde(rename = "extendSession")]
+    pub extend_session: Session,
+}

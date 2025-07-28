@@ -650,6 +650,77 @@ impl GraphQLClient {
             .map(|d| d.browse)
             .unwrap_or_default())
     }
+
+    pub async fn extend_session(&self, token: &str) -> Result<Session> {
+        let query = r#"
+            mutation ExtendSession {
+                extendSession {
+                    token
+                    expires
+                    error {
+                        code
+                        description
+                    }
+                }
+            }
+        "#;
+
+        let request = serde_json::json!({
+            "query": query,
+        });
+
+        debug!("Sending extendSession request");
+
+        let response = self
+            .client
+            .post(&self.url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "GraphQL request failed with status: {}",
+                response.status()
+            ));
+        }
+
+        let extend_session_response: ExtendSessionResponse = response.json().await?;
+
+        if let Some(errors) = extend_session_response.errors {
+            let error_msg = errors
+                .iter()
+                .map(|e| e.description.as_deref().unwrap_or("Unknown error"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(anyhow!("extendSession failed: {}", error_msg));
+        }
+
+        let session = extend_session_response
+            .data
+            .ok_or_else(|| anyhow!("No data in extendSession response"))?
+            .extend_session;
+
+        if let Some(error) = &session.error {
+            let error_code = error.code.as_deref().unwrap_or("1");
+            if error_code != "0" {
+                let description = error.description.as_deref().unwrap_or("Unknown error");
+                error!(
+                    "Failed to extend session - code: {}, description: {}",
+                    error_code, description
+                );
+                return Err(anyhow!(
+                    "Failed to extend session (code {}): {}",
+                    error_code,
+                    description
+                ));
+            }
+        }
+
+        info!("Successfully extended session");
+        Ok(session)
+    }
 }
 
 pub async fn validate_connection(url: &str) -> Result<()> {
