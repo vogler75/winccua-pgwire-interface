@@ -3,6 +3,7 @@ use crate::query_handler::QueryHandler;
 use crate::tables::QueryInfo;
 use anyhow::Result;
 use chrono::Utc;
+use std::time::Instant;
 use tracing::{debug, info};
 
 impl QueryHandler {
@@ -45,6 +46,7 @@ impl QueryHandler {
         debug!("  📊 maxNumberOfResults: {:?}", limit);
 
         // Call GraphQL
+        let graphql_start = Instant::now();
         let alarm_results = session
             .client
             .get_logged_alarms(
@@ -57,6 +59,8 @@ impl QueryHandler {
                 filter_language,
             )
             .await?;
+        let graphql_elapsed_ms = graphql_start.elapsed().as_millis();
+        info!("🚀 GraphQL query for LoggedAlarms completed in {} ms", graphql_elapsed_ms);
 
         debug!("✅ GraphQL returned {} logged alarms", alarm_results.len());
 
@@ -108,6 +112,7 @@ impl QueryHandler {
         debug!("  📊 maxNumberOfResults: {:?}", limit);
 
         // Call GraphQL
+        let graphql_start = Instant::now();
         let alarm_results = session
             .client
             .get_logged_alarms(
@@ -120,6 +125,8 @@ impl QueryHandler {
                 filter_language,
             )
             .await?;
+        let graphql_elapsed_ms = graphql_start.elapsed().as_millis();
+        info!("🚀 GraphQL query for LoggedAlarms completed in {} ms", graphql_elapsed_ms);
 
         debug!("✅ GraphQL returned {} logged alarms", alarm_results.len());
 

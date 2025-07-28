@@ -2,6 +2,7 @@ use crate::auth::AuthenticatedSession;
 use crate::query_handler::QueryHandler;
 use crate::tables::QueryInfo;
 use anyhow::Result;
+use std::time::Instant;
 use tracing::{debug, info};
 
 impl QueryHandler {
@@ -30,6 +31,7 @@ impl QueryHandler {
         debug!("🌐 Language filter: {}", language);
 
         // Call GraphQL browse with filters
+        let graphql_start = Instant::now();
         let browse_results = if object_type_filters.is_empty() {
             session
                 .client
@@ -46,8 +48,10 @@ impl QueryHandler {
                 )
                 .await?
         };
+        let graphql_elapsed_ms = graphql_start.elapsed().as_millis();
 
         debug!("✅ GraphQL browse returned {} results", browse_results.len());
+        info!("🚀 GraphQL query for TagList completed in {} ms", graphql_elapsed_ms);
 
         // Apply post-processing filters (for columns not supported by GraphQL)
         let filtered_results = Self::apply_browse_filters(browse_results, &query_info.filters)?;

@@ -2,6 +2,7 @@ use crate::auth::AuthenticatedSession;
 use crate::query_handler::QueryHandler;
 use crate::tables::QueryInfo;
 use anyhow::{anyhow, Result};
+use std::time::Instant;
 use tracing::{debug, info};
 
 impl QueryHandler {
@@ -37,11 +38,14 @@ impl QueryHandler {
         debug!("🎯 Final tag names to query: {:?}", final_tag_names);
 
         // Call GraphQL
+        let graphql_start = Instant::now();
         let tag_results = session
             .client
             .get_tag_values(&session.token, final_tag_names, false)
             .await?;
+        let graphql_elapsed_ms = graphql_start.elapsed().as_millis();
         debug!("✅ GraphQL returned {} tag results", tag_results.len());
+        info!("🚀 GraphQL query for TagValues completed in {} ms", graphql_elapsed_ms);
 
         // Filter and format results
         let filtered_results = Self::apply_filters(tag_results, &query_info.filters)?;

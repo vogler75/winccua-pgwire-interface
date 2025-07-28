@@ -3,7 +3,8 @@ use crate::query_handler::QueryHandler;
 use crate::tables::{ColumnFilter, FilterOperator, QueryInfo};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use tracing::{debug, warn};
+use std::time::Instant;
+use tracing::{debug, info, warn};
 
 impl QueryHandler {
     pub(super) async fn resolve_like_patterns(
@@ -41,6 +42,7 @@ impl QueryHandler {
             );
 
             // Call appropriate GraphQL browse function based on table type
+            let graphql_start = Instant::now();
             let browse_results = match query_info.table {
                 crate::tables::VirtualTable::LoggedTagValues => {
                     debug!("🗂️  Using browse_logging_tags for LoggedTagValues with objectTypeFilters=LOGGINGTAG");
@@ -57,6 +59,8 @@ impl QueryHandler {
                         .await?
                 }
             };
+            let graphql_elapsed_ms = graphql_start.elapsed().as_millis();
+            info!("🚀 GraphQL browse for LIKE pattern '{}' completed in {} ms", pattern, graphql_elapsed_ms);
             debug!(
                 "📋 Browse returned {} tags for pattern '{}'",
                 browse_results.len(),

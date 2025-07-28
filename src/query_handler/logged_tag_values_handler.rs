@@ -3,6 +3,7 @@ use crate::query_handler::QueryHandler;
 use crate::tables::QueryInfo;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
+use std::time::Instant;
 use tracing::{debug, info, warn};
 
 impl QueryHandler {
@@ -66,6 +67,7 @@ impl QueryHandler {
         };
         debug!("🔄 Using GraphQL sortingMode: {:?}", sorting_mode);
 
+        let graphql_start = Instant::now();
         let logged_results_response = session
             .client
             .get_logged_tag_values(
@@ -77,6 +79,8 @@ impl QueryHandler {
                 sorting_mode,
             )
             .await?;
+        let graphql_elapsed_ms = graphql_start.elapsed().as_millis();
+        info!("🚀 GraphQL query for LoggedTagValues completed in {} ms", graphql_elapsed_ms);
 
         // Convert LoggedTagValuesResult to LoggedTagValue format
         let mut all_values = Vec::new();
