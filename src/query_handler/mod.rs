@@ -204,7 +204,8 @@ fn extract_value_from_array(array: &dyn arrow::array::Array, index: usize) -> Re
     } else if let Some(arr) = array.as_any().downcast_ref::<TimestampNanosecondArray>() {
         let timestamp = arr.value(index);
         let datetime = chrono::DateTime::from_timestamp_nanos(timestamp);
-        Ok(QueryValue::Timestamp(datetime.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()))
+        // Use PostgreSQL TIMESTAMP format: YYYY-MM-DD HH:MM:SS.ssssss
+        Ok(QueryValue::Timestamp(datetime.format("%Y-%m-%d %H:%M:%S%.6f").to_string()))
     } else {
         // Fallback: convert to string
         Ok(QueryValue::Text(format!("{:?}", array)))
