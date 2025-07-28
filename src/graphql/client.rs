@@ -225,7 +225,6 @@ impl GraphQLClient {
         }
 
         let response_text = response.text().await?;
-        debug!("LoggedTagValues raw response: {}", response_text);
         
         // First check if this is an error response
         if response_text.contains("\"errors\"") && response_text.contains("\"loggedTagValues\":null") {

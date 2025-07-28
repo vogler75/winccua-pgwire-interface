@@ -642,22 +642,6 @@ pub(super) async fn handle_postgres_startup(
                     response_buffer.len()
                 );
                 
-                // Log all outgoing messages in this response
-                let mut temp_pos = 0;
-                while temp_pos < response_buffer.len() && temp_pos + 5 <= response_buffer.len() {
-                    let msg_type = response_buffer[temp_pos] as char;
-                    let msg_len = u32::from_be_bytes([
-                        response_buffer[temp_pos + 1],
-                        response_buffer[temp_pos + 2],
-                        response_buffer[temp_pos + 3],
-                        response_buffer[temp_pos + 4],
-                    ]) as usize;
-                    debug!("   Outgoing message: type='{}' length={}", msg_type, msg_len);
-                    temp_pos += 1 + msg_len;
-                    if temp_pos > response_buffer.len() {
-                        break;
-                    }
-                }
                 
                 socket.write_all(&response_buffer).await?;
             }
