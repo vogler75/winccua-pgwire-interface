@@ -251,6 +251,9 @@ impl QueryHandler {
                     | VirtualTable::InformationSchemaColumns => {
                         crate::information_schema::handle_information_schema_query(&query_info)
                     }
+                    VirtualTable::FromLessQuery => {
+                        Self::execute_from_less_query(sql, &query_info, session).await
+                    }
                 }
             }
             SqlResult::SetStatement(set_command) => {
@@ -463,5 +466,31 @@ impl QueryHandler {
 
         // Convert RecordBatch results directly to QueryResult
         QueryResult::from_record_batches(results)
+    }
+
+    async fn execute_from_less_query(
+        sql: &str,
+        query_info: &QueryInfo, 
+        session: &AuthenticatedSession,
+    ) -> Result<QueryResult> {
+        info!("🔍 Executing FROM-less query: {}", sql.trim());
+        
+        // For SELECT 1 queries, extend the session as a keep-alive
+        if sql.trim().to_uppercase().contains("SELECT 1") {
+            match session.client.extend_session(&session.token).await {
+                Ok(_) => debug!("✅ Session extended successfully for SELECT 1"),
+                Err(e) => warn!("⚠️ Failed to extend session: {}", e),
+            }
+        }
+        
+        // Use DataFusion to execute the FROM-less query directly
+        let ctx = datafusion::prelude::SessionContext::new();
+        
+        // Execute the query
+        let df = ctx.sql(sql).await?;
+        let batches = df.collect().await?;
+        
+        // Convert the results to QueryResult
+        QueryResult::from_record_batches(batches)
     }
 }

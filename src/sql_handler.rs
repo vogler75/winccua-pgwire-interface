@@ -36,6 +36,11 @@ impl SqlHandler {
     fn parse_select_query(query: &Query) -> Result<QueryInfo> {
         match &*query.body {
             SetExpr::Select(select) => {
+                // Handle queries without FROM clause (like SELECT 1, SELECT VERSION(), etc.)
+                if select.from.is_empty() {
+                    return Self::handle_from_less_query(select, query);
+                }
+                
                 let table = Self::extract_table(select)?;
                 let (columns, column_mappings) = Self::extract_columns(select, &table)?;
                 let filters = Self::extract_filters(select, &table)?;
@@ -61,6 +66,58 @@ impl SqlHandler {
                 Ok(query_info)
             }
             _ => Err(anyhow!("Only simple SELECT statements are supported")),
+        }
+    }
+
+    fn handle_from_less_query(select: &Select, query: &Query) -> Result<QueryInfo> {
+        // For FROM-less queries like SELECT 1, SELECT VERSION(), etc.
+        // Extract column names from the SELECT expressions
+        let mut columns = Vec::new();
+        let mut column_mappings = std::collections::HashMap::new();
+        
+        for item in &select.projection {
+            match item {
+                SelectItem::UnnamedExpr(expr) => {
+                    let column_name = Self::generate_column_name_for_expression(expr);
+                    columns.push(column_name);
+                }
+                SelectItem::ExprWithAlias { expr: _, alias } => {
+                    columns.push(alias.value.clone());
+                }
+                SelectItem::Wildcard(_) => {
+                    return Err(anyhow!("SELECT * is not supported in FROM-less queries"));
+                }
+                SelectItem::QualifiedWildcard(_, _) => {
+                    return Err(anyhow!("Qualified wildcards are not supported in FROM-less queries"));
+                }
+            }
+        }
+        
+        // FROM-less queries don't have filters, ordering, or limits in our simple implementation
+        let filters = vec![];
+        let limit = query.limit.as_ref().and_then(|l| Self::extract_limit(l));
+        let order_by = None; // FROM-less queries typically don't need ordering
+        
+        Ok(QueryInfo {
+            table: VirtualTable::FromLessQuery,
+            columns,
+            column_mappings,
+            filters,
+            limit,
+            order_by,
+        })
+    }
+    
+    fn generate_column_name_for_expression(expr: &Expr) -> String {
+        match expr {
+            Expr::Value(Value::Number(n, _)) => "?column?".to_string(),
+            Expr::Value(Value::SingleQuotedString(_)) => "?column?".to_string(),
+            Expr::Value(Value::Boolean(_)) => "?column?".to_string(),
+            Expr::Function(func) => {
+                // For functions like VERSION(), return the function name in lowercase
+                func.name.0.first().map(|n| n.value.to_lowercase()).unwrap_or_else(|| "?column?".to_string())
+            }
+            _ => "?column?".to_string(),
         }
     }
 

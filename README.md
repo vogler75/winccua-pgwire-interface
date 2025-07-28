@@ -169,10 +169,10 @@ Here are some examples of complex queries that are now supported for the `taglis
 
 ```sql
 -- Find all tags where the display name contains '::PV'
-select * from taglist where display_name like '%::%PV%';
+select * from taglist where display_name like '%PV%';
 
 -- Count tags by their object type
-select object_type, count(*) from taglist where display_name like '%:%PV%' group by object_type;
+select object_type, count(*) from taglist where display_name like '%PV%' group by object_type;
 
 -- Calculate the sum of numeric values for a group of tags
 select sum(numeric_value) from tagvalues where tag_name like '%HMI_Tag_%' ;
@@ -203,8 +203,8 @@ LIMIT 100;
 -- Find tags with LIKE pattern (uses GraphQL browse)
 SELECT * FROM tagvalues WHERE tag_name LIKE 'Temp%';
 
--- LIKE patterns with wildcards for LoggedTagValues (note the second % is important)
-SELECT * FROM loggedtagvalues WHERE tag_name LIKE 'HMI_Tag_%:%';
+-- LIKE patterns with wildcards for LoggedTagValues (note the second part ":%" is important)
+SELECT * FROM loggedtagvalues WHERE tag_name LIKE '%::HMI_Tag_%:%';
 
 -- Get active alarms
 SELECT name, priority, event_text, raise_time 
@@ -215,7 +215,7 @@ WHERE priority >= 10;
 SELECT * FROM tag_list;
 
 -- Filter tags by pattern
-SELECT * FROM tag_list WHERE tag_name LIKE 'HMI_%';
+SELECT * FROM tag_list WHERE tag_name LIKE '%::HMI_%';
 ```
 
 ## LIKE Pattern Support

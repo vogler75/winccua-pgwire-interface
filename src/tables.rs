@@ -9,6 +9,7 @@ pub enum VirtualTable {
     TagList,
     InformationSchemaTables,
     InformationSchemaColumns,
+    FromLessQuery, // For queries without FROM clause like SELECT 1, SELECT VERSION(), etc.
 }
 
 impl ToString for VirtualTable {
@@ -21,6 +22,7 @@ impl ToString for VirtualTable {
             VirtualTable::TagList => "taglist".to_string(),
             VirtualTable::InformationSchemaTables => "information_schema.tables".to_string(),
             VirtualTable::InformationSchemaColumns => "information_schema.columns".to_string(),
+            VirtualTable::FromLessQuery => "dual".to_string(), // Use Oracle-style "dual" table name
         }
     }
 }
@@ -168,6 +170,10 @@ impl VirtualTable {
                 ("is_generated", Type::TEXT),
                 ("generation_expression", Type::TEXT),
                 ("is_updatable", Type::TEXT),
+            ],
+            Self::FromLessQuery => vec![
+                // Empty schema - FROM-less queries don't have predefined columns
+                // The actual columns will be determined by the SELECT expressions
             ],
         }
     }
