@@ -4,7 +4,7 @@ pub(super) fn create_postgres_error_response(code: &str, message: &str) -> Vec<u
     // Error message format:
     // 'E' + length(4 bytes) + severity + code + message + null terminators
 
-    response.push(b'E'); // Error message type
+    response.push(b'E'); // 'E' = ErrorResponse message type
 
     // Build the error fields
     let mut fields = Vec::new();
@@ -41,13 +41,13 @@ pub(super) fn create_postgres_auth_ok_response() -> Vec<u8> {
 
     // Authentication OK message
     // Message type 'R' (Authentication) + length (4 bytes) + auth type (4 bytes, 0 = OK)
-    response.push(b'R');
+    response.push(b'R'); // 'R' = Authentication message
     response.extend_from_slice(&8u32.to_be_bytes()); // Length: 4 (length) + 4 (auth type) = 8
     response.extend_from_slice(&0u32.to_be_bytes()); // Auth type 0 = OK
 
     // BackendKeyData message - CRITICAL for Grafana compatibility
-    // Message type 'K' + length (4 bytes) + process_id (4 bytes) + secret_key (4 bytes)
-    response.push(b'K');
+    // Message type 'K' (BackendKeyData) + length (4 bytes) + process_id (4 bytes) + secret_key (4 bytes)
+    response.push(b'K'); // 'K' = BackendKeyData message
     response.extend_from_slice(&12u32.to_be_bytes()); // Length: 4 + 4 + 4 = 12
     response.extend_from_slice(&12345u32.to_be_bytes()); // Dummy process ID
     response.extend_from_slice(&67890u32.to_be_bytes()); // Dummy secret key
@@ -67,18 +67,18 @@ pub(super) fn create_postgres_auth_ok_response() -> Vec<u8> {
     ];
 
     for (name, value) in params {
-        // Parameter status message: 'S' + length + name + null + value + null
-        response.push(b'S');
+        // Parameter status message: 'S' (ParameterStatus) + length + name + null + value + null
+        response.push(b'S'); // 'S' = ParameterStatus message
         let content = format!("{}\0{}\0", name, value);
         let length = 4 + content.len(); // 4 bytes for length field + content
         response.extend_from_slice(&(length as u32).to_be_bytes());
         response.extend_from_slice(content.as_bytes());
     }
 
-    // Ready for query message: 'Z' + length + status
-    response.push(b'Z');
+    // Ready for query message: 'Z' (ReadyForQuery) + length + status
+    response.push(b'Z'); // 'Z' = ReadyForQuery message
     response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
-    response.push(b'I'); // Status: 'I' = idle
+    response.push(b'I'); // Status: 'I' = idle (not in transaction)
 
     response
 }
@@ -91,17 +91,17 @@ pub(super) fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
     if csv_data.starts_with("COMMAND_COMPLETE:") {
         let command_tag = csv_data.strip_prefix("COMMAND_COMPLETE:").unwrap_or("OK");
 
-        // Command complete message: 'C' + length + tag
-        response.push(b'C');
+        // Command complete message: 'C' (CommandComplete) + length + tag
+        response.push(b'C'); // 'C' = CommandComplete message
         let tag_length = 4 + command_tag.len() + 1; // 4 bytes for length + tag + null terminator
         response.extend_from_slice(&(tag_length as u32).to_be_bytes());
         response.extend_from_slice(command_tag.as_bytes());
         response.push(0); // Null terminator
 
-        // Ready for query message: 'Z' + length + status
-        response.push(b'Z');
+        // Ready for query message: 'Z' (ReadyForQuery) + length + status
+        response.push(b'Z'); // 'Z' = ReadyForQuery message
         response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
-        response.push(b'I'); // Status: 'I' = idle
+        response.push(b'I'); // Status: 'I' = idle (not in transaction)
 
         return response;
     }
@@ -109,12 +109,12 @@ pub(super) fn format_as_postgres_result(csv_data: &str) -> Vec<u8> {
     // Handle empty query response
     if csv_data.trim() == "EMPTY_QUERY_RESPONSE" {
         // For empty queries, send EmptyQueryResponse followed by ReadyForQuery
-        // EmptyQueryResponse message: 'I' + length (4 bytes only)
-        response.push(b'I');
+        // EmptyQueryResponse message: 'I' (EmptyQueryResponse) + length (4 bytes only)
+        response.push(b'I'); // 'I' = EmptyQueryResponse message
         response.extend_from_slice(&4u32.to_be_bytes()); // Length: 4 bytes (just the length field)
 
-        // Ready for query message: 'Z' + length + status
-        response.push(b'Z');
+        // Ready for query message: 'Z' (ReadyForQuery) + length + status
+        response.push(b'Z'); // 'Z' = ReadyForQuery message
         response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
         response.push(b'I'); // Status: 'I' = idle (not in transaction)
 
@@ -424,8 +424,8 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
     tracing::debug!("🔧 Formatting QueryResult with {} columns, {} rows", result.columns.len(), result.rows.len());
     tracing::debug!("🔧 Columns: {:?}", result.columns);
     
-    // RowDescription message: 'T' + length + field_count + fields
-    response.push(b'T');
+    // RowDescription message: 'T' (RowDescription) + length + field_count + fields
+    response.push(b'T'); // 'T' = RowDescription message
     
     let mut fields_data = Vec::new();
     fields_data.extend_from_slice(&(result.columns.len() as u16).to_be_bytes());
@@ -466,11 +466,11 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
     response.extend_from_slice(&(length as u32).to_be_bytes());
     response.extend_from_slice(&fields_data);
     
-    tracing::debug!("🔧 RowDescription message: {} bytes total", response.len());
+    tracing::debug!("🔧 RowDescription ('T') message: {} bytes total", response.len());
     
-    // DataRow messages: 'D' + length + column_count + columns
+    // DataRow messages: 'D' (DataRow) + length + column_count + columns
     for row in &result.rows {
-        response.push(b'D');
+        response.push(b'D'); // 'D' = DataRow message
         
         let mut row_data = Vec::new();
         row_data.extend_from_slice(&(row.len() as u16).to_be_bytes());
@@ -520,20 +520,20 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
         response.extend_from_slice(&row_data);
     }
     
-    tracing::debug!("🔧 Added {} DataRow messages", result.rows.len());
+    tracing::debug!("🔧 Added {} DataRow ('D') messages", result.rows.len());
     
-    // CommandComplete message: 'C' + length + tag
-    response.push(b'C');
+    // CommandComplete message: 'C' (CommandComplete) + length + tag
+    response.push(b'C'); // 'C' = CommandComplete message
     let tag = format!("SELECT {}", result.rows.len());
     let tag_length = 4 + tag.len() + 1; // 4 bytes for length + tag + null terminator
     response.extend_from_slice(&(tag_length as u32).to_be_bytes());
     response.extend_from_slice(tag.as_bytes());
     response.push(0); // Null terminator
     
-    // ReadyForQuery message: 'Z' + length + status
-    response.push(b'Z');
+    // ReadyForQuery message: 'Z' (ReadyForQuery) + length + status
+    response.push(b'Z'); // 'Z' = ReadyForQuery message
     response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
-    response.push(b'I'); // Status: 'I' = idle
+    response.push(b'I'); // Status: 'I' = idle (not in transaction)
     
     tracing::debug!("🔧 Complete PostgreSQL response: {} bytes total", response.len());
     
@@ -548,7 +548,7 @@ pub(super) fn format_query_result_as_extended_query_result(result: &crate::query
     
     // DataRow messages only (no RowDescription - that was sent by Describe)
     for row in &result.rows {
-        response.push(b'D');
+        response.push(b'D'); // 'D' = DataRow message
         
         let mut row_data = Vec::new();
         row_data.extend_from_slice(&(row.len() as u16).to_be_bytes());
@@ -598,10 +598,10 @@ pub(super) fn format_query_result_as_extended_query_result(result: &crate::query
         response.extend_from_slice(&row_data);
     }
     
-    tracing::debug!("🔧 Added {} DataRow messages for Extended Query", result.rows.len());
+    tracing::debug!("🔧 Added {} DataRow ('D') messages for Extended Query", result.rows.len());
     
-    // CommandComplete message: 'C' + length + tag
-    response.push(b'C');
+    // CommandComplete message: 'C' (CommandComplete) + length + tag
+    response.push(b'C'); // 'C' = CommandComplete message
     let tag = format!("SELECT {}", result.rows.len());
     let tag_length = 4 + tag.len() + 1; // 4 bytes for length + tag + null terminator
     response.extend_from_slice(&(tag_length as u32).to_be_bytes());
