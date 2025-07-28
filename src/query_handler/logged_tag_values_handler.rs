@@ -80,7 +80,6 @@ impl QueryHandler {
             )
             .await?;
         let graphql_elapsed_ms = graphql_start.elapsed().as_millis();
-        info!("🚀 GraphQL query for LoggedTagValues completed in {} ms", graphql_elapsed_ms);
 
         // Convert LoggedTagValuesResult to LoggedTagValue format
         let mut all_values = Vec::new();
@@ -111,7 +110,7 @@ impl QueryHandler {
             }
         }
 
-        debug!("✅ Got {} total logged values", all_values.len());
+        info!("🚀 GraphQL query for LoggedTagValues completed in {} ms, fetched {} rows", graphql_elapsed_ms, all_values.len());
 
         // Apply additional filters and sorting
         let filtered_results = Self::apply_logged_filters(all_values, &query_info.filters)?;
