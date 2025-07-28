@@ -136,7 +136,10 @@ impl QueryResult {
         // Extract column names and types
         for field in schema.fields() {
             columns.push(field.name().clone());
-            column_types.push(arrow_type_to_postgres_oid(field.data_type()));
+            let postgres_oid = arrow_type_to_postgres_oid(field.data_type());
+            column_types.push(postgres_oid);
+            tracing::info!("🔧 Column '{}': Arrow type {:?} -> PostgreSQL OID {}", 
+                field.name(), field.data_type(), postgres_oid);
         }
         
         let mut result = QueryResult::new(columns, column_types);
@@ -152,6 +155,9 @@ impl QueryResult {
                 for col_idx in 0..num_cols {
                     let column = batch.column(col_idx);
                     let value = extract_value_from_array(column, row_idx)?;
+                    if row_idx == 0 { // Log first row for debugging
+                        tracing::info!("🔧 Column {}: {:?}", col_idx, value);
+                    }
                     row.push(value);
                 }
                 

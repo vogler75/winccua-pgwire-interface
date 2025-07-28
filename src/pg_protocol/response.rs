@@ -444,6 +444,8 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
         } else {
             25 // TEXT
         };
+        tracing::info!("🔧 Sending column '{}' with PostgreSQL OID {} ({})", 
+            column_name, type_oid, postgres_type_name(type_oid));
         fields_data.extend_from_slice(&type_oid.to_be_bytes());
         
         // Add type size (-1 for variable size)
@@ -473,7 +475,14 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
         let mut row_data = Vec::new();
         row_data.extend_from_slice(&(row.len() as u16).to_be_bytes());
         
-        for value in row {
+        for (col_idx, value) in row.iter().enumerate() {
+            // Get the column type to determine format
+            let type_oid = if col_idx < result.column_types.len() {
+                result.column_types[col_idx]
+            } else {
+                25 // TEXT
+            };
+            
             match value {
                 crate::query_handler::QueryValue::Null => {
                     row_data.extend_from_slice(&(-1i32).to_be_bytes());
@@ -484,11 +493,13 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
                 }
                 crate::query_handler::QueryValue::Integer(i) => {
                     let s = i.to_string();
+                    tracing::debug!("🔧 Sending integer {} as text: '{}'", i, s);
                     row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
                     row_data.extend_from_slice(s.as_bytes());
                 }
                 crate::query_handler::QueryValue::Float(f) => {
                     let s = f.to_string();
+                    tracing::debug!("🔧 Sending float {} as text: '{}'", f, s);
                     row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
                     row_data.extend_from_slice(s.as_bytes());
                 }
@@ -542,7 +553,14 @@ pub(super) fn format_query_result_as_extended_query_result(result: &crate::query
         let mut row_data = Vec::new();
         row_data.extend_from_slice(&(row.len() as u16).to_be_bytes());
         
-        for value in row {
+        for (col_idx, value) in row.iter().enumerate() {
+            // Get the column type to determine format
+            let type_oid = if col_idx < result.column_types.len() {
+                result.column_types[col_idx]
+            } else {
+                25 // TEXT
+            };
+            
             match value {
                 crate::query_handler::QueryValue::Null => {
                     row_data.extend_from_slice(&(-1i32).to_be_bytes());
@@ -553,11 +571,13 @@ pub(super) fn format_query_result_as_extended_query_result(result: &crate::query
                 }
                 crate::query_handler::QueryValue::Integer(i) => {
                     let s = i.to_string();
+                    tracing::debug!("🔧 Sending integer {} as text: '{}'", i, s);
                     row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
                     row_data.extend_from_slice(s.as_bytes());
                 }
                 crate::query_handler::QueryValue::Float(f) => {
                     let s = f.to_string();
+                    tracing::debug!("🔧 Sending float {} as text: '{}'", f, s);
                     row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
                     row_data.extend_from_slice(s.as_bytes());
                 }
@@ -591,6 +611,20 @@ pub(super) fn format_query_result_as_extended_query_result(result: &crate::query
     tracing::debug!("🔧 Complete Extended Query response: {} bytes total", response.len());
     
     response
+}
+
+fn postgres_type_name(oid: u32) -> &'static str {
+    match oid {
+        16 => "bool",
+        20 => "int8", 
+        21 => "int2",
+        23 => "int4",
+        25 => "text",
+        700 => "float4",
+        701 => "float8", 
+        1114 => "timestamp",
+        _ => "unknown",
+    }
 }
 
 // Parse CSV line handling quoted fields properly
