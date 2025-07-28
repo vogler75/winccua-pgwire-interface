@@ -40,6 +40,85 @@ fn create_empty_query_response() -> String {
     "EMPTY_QUERY_RESPONSE".to_string()
 }
 
+pub(super) async fn handle_extended_query(
+    query: &str,
+    session: &crate::auth::AuthenticatedSession,
+) -> Result<Vec<u8>> {
+    debug!("🔍 Processing extended query: {}", query.trim());
+
+    // Handle empty queries (just whitespace and/or semicolons)
+    let cleaned_query = query.trim().trim_end_matches(';').trim();
+    if cleaned_query.is_empty() {
+        info!("⚪ Empty extended query received, returning CommandComplete");
+        return Ok(create_command_complete_wire_response(""));
+    }
+
+    let trimmed_query = query.trim().to_uppercase();
+
+    // Handle transaction control statements that can be safely acknowledged
+    if is_transaction_control_statement(&trimmed_query) {
+        info!(
+            "📋 Transaction control statement (acknowledged): {}",
+            query.trim()
+        );
+        return Ok(create_command_complete_wire_response(
+            &get_transaction_command_tag(&trimmed_query),
+        ));
+    }
+
+    // Handle other utility statements
+    if is_utility_statement(&trimmed_query) {
+        info!("🔧 Utility statement: {}", query.trim());
+
+        // Check if this is a SET statement - if so, use QueryHandler for proper parsing
+        if trimmed_query.starts_with("SET ") {
+            info!(
+                "🔧 SET statement detected, routing to QueryHandler: {}",
+                query.trim()
+            );
+            let result = crate::query_handler::QueryHandler::execute_query(query, session).await?;
+            return Ok(super::response::format_query_result_as_extended_query_result(&result));
+        }
+
+        // Handle SELECT statements with actual data (for Extended Query, no RowDescription)
+        let query_without_semicolon = trimmed_query.trim_end_matches(';').trim();
+        if query_without_semicolon == "SELECT 1" {
+            info!("🔍 Returning data for SELECT 1 (Extended Query)");
+            match session.client.extend_session(&session.token).await {
+                Ok(_) => debug!("Session extended successfully"),
+                Err(e) => warn!("Failed to extend session: {}", e),
+            }
+            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Text("1".to_string())]);
+            return Ok(super::response::format_query_result_as_extended_query_result(&result));
+        } else if query_without_semicolon == "SELECT TRUE" {
+            info!("🔍 Returning data for SELECT TRUE (Extended Query)");
+            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Boolean(true)]);
+            return Ok(super::response::format_query_result_as_extended_query_result(&result));
+        } else if query_without_semicolon == "SELECT FALSE" {
+            info!("🔍 Returning data for SELECT FALSE (Extended Query)");
+            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Boolean(false)]);
+            return Ok(super::response::format_query_result_as_extended_query_result(&result));
+        } else if query_without_semicolon == "SELECT VERSION()" {
+            info!("🔍 Returning data for SELECT VERSION() (Extended Query)");
+            let result = create_simple_query_result("version", vec![crate::query_handler::QueryValue::Text("WinCC Unified PostgreSQL Interface 1.0".to_string())]);
+            return Ok(super::response::format_query_result_as_extended_query_result(&result));
+        } else if query_without_semicolon == "SELECT CURRENT_DATABASE()" {
+            info!("🔍 Returning data for SELECT CURRENT_DATABASE() (Extended Query)");
+            let result = create_simple_query_result("current_database", vec![crate::query_handler::QueryValue::Text("system".to_string())]);
+            return Ok(super::response::format_query_result_as_extended_query_result(&result));
+        }
+
+        // For other utility statements, just acknowledge
+        return Ok(create_command_complete_wire_response(
+            &get_utility_command_tag(&trimmed_query),
+        ));
+    }
+
+    // Use the new query handler for all SQL processing
+    let result = crate::query_handler::QueryHandler::execute_query(query, session).await?;
+    Ok(super::response::format_query_result_as_extended_query_result(&result))
+}
+
 pub(super) async fn handle_simple_query(
     query: &str,
     session: &crate::auth::AuthenticatedSession,

@@ -325,8 +325,8 @@ async fn handle_execute_message(
 
     info!("🔍 Executing parameterized query: {}", final_query.trim());
 
-    // Execute the query
-    match handle_simple_query(&final_query, session).await {
+    // Execute the query - for Extended Query protocol, we need a different response format
+    match super::query_execution::handle_extended_query(&final_query, session).await {
         Ok(response) => {
             debug!("📤 Extended query result: {} bytes", response.len());
             // Log the message types in the response

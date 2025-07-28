@@ -418,6 +418,9 @@ pub(super) fn create_empty_row_description_response() -> Vec<u8> {
 pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handler::QueryResult) -> Vec<u8> {
     let mut response = Vec::new();
     
+    tracing::debug!("🔧 Formatting QueryResult with {} columns, {} rows", result.columns.len(), result.rows.len());
+    tracing::debug!("🔧 Columns: {:?}", result.columns);
+    
     // RowDescription message: 'T' + length + field_count + fields
     response.push(b'T');
     
@@ -453,9 +456,12 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
         fields_data.extend_from_slice(&format_code.to_be_bytes());
     }
     
+    // Write length immediately after message type
     let length = 4 + fields_data.len();
     response.extend_from_slice(&(length as u32).to_be_bytes());
     response.extend_from_slice(&fields_data);
+    
+    tracing::debug!("🔧 RowDescription message: {} bytes total", response.len());
     
     // DataRow messages: 'D' + length + column_count + columns
     for row in &result.rows {
@@ -500,6 +506,8 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
         response.extend_from_slice(&row_data);
     }
     
+    tracing::debug!("🔧 Added {} DataRow messages", result.rows.len());
+    
     // CommandComplete message: 'C' + length + tag
     response.push(b'C');
     let tag = format!("SELECT {}", result.rows.len());
@@ -512,6 +520,72 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
     response.push(b'Z');
     response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
     response.push(b'I'); // Status: 'I' = idle
+    
+    tracing::debug!("🔧 Complete PostgreSQL response: {} bytes total", response.len());
+    
+    response
+}
+
+/// Format QueryResult for Extended Query protocol (DataRow + CommandComplete only, no RowDescription)
+pub(super) fn format_query_result_as_extended_query_result(result: &crate::query_handler::QueryResult) -> Vec<u8> {
+    let mut response = Vec::new();
+    
+    tracing::debug!("🔧 Formatting QueryResult for Extended Query: {} columns, {} rows", result.columns.len(), result.rows.len());
+    
+    // DataRow messages only (no RowDescription - that was sent by Describe)
+    for row in &result.rows {
+        response.push(b'D');
+        
+        let mut row_data = Vec::new();
+        row_data.extend_from_slice(&(row.len() as u16).to_be_bytes());
+        
+        for value in row {
+            match value {
+                crate::query_handler::QueryValue::Null => {
+                    row_data.extend_from_slice(&(-1i32).to_be_bytes());
+                }
+                crate::query_handler::QueryValue::Text(s) => {
+                    row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(s.as_bytes());
+                }
+                crate::query_handler::QueryValue::Integer(i) => {
+                    let s = i.to_string();
+                    row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(s.as_bytes());
+                }
+                crate::query_handler::QueryValue::Float(f) => {
+                    let s = f.to_string();
+                    row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(s.as_bytes());
+                }
+                crate::query_handler::QueryValue::Timestamp(s) => {
+                    row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(s.as_bytes());
+                }
+                crate::query_handler::QueryValue::Boolean(b) => {
+                    let s = if *b { "true" } else { "false" };
+                    row_data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                    row_data.extend_from_slice(s.as_bytes());
+                }
+            }
+        }
+        
+        let length = 4 + row_data.len();
+        response.extend_from_slice(&(length as u32).to_be_bytes());
+        response.extend_from_slice(&row_data);
+    }
+    
+    tracing::debug!("🔧 Added {} DataRow messages for Extended Query", result.rows.len());
+    
+    // CommandComplete message: 'C' + length + tag
+    response.push(b'C');
+    let tag = format!("SELECT {}", result.rows.len());
+    let tag_length = 4 + tag.len() + 1; // 4 bytes for length + tag + null terminator
+    response.extend_from_slice(&(tag_length as u32).to_be_bytes());
+    response.extend_from_slice(tag.as_bytes());
+    response.push(0); // Null terminator
+    
+    tracing::debug!("🔧 Complete Extended Query response: {} bytes total", response.len());
     
     response
 }
