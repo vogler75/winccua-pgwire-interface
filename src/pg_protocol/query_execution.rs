@@ -80,33 +80,6 @@ pub(super) async fn handle_extended_query(
             return Ok(super::response::format_query_result_as_extended_query_result(&result));
         }
 
-        // Handle SELECT statements with actual data (for Extended Query, no RowDescription)
-        let query_without_semicolon = trimmed_query.trim_end_matches(';').trim();
-        if query_without_semicolon == "SELECT 1" {
-            info!("🔍 Returning data for SELECT 1 (Extended Query)");
-            match session.client.extend_session(&session.token).await {
-                Ok(_) => debug!("Session extended successfully"),
-                Err(e) => warn!("Failed to extend session: {}", e),
-            }
-            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Text("1".to_string())]);
-            return Ok(super::response::format_query_result_as_extended_query_result(&result));
-        } else if query_without_semicolon == "SELECT TRUE" {
-            info!("🔍 Returning data for SELECT TRUE (Extended Query)");
-            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Boolean(true)]);
-            return Ok(super::response::format_query_result_as_extended_query_result(&result));
-        } else if query_without_semicolon == "SELECT FALSE" {
-            info!("🔍 Returning data for SELECT FALSE (Extended Query)");
-            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Boolean(false)]);
-            return Ok(super::response::format_query_result_as_extended_query_result(&result));
-        } else if query_without_semicolon == "SELECT VERSION()" {
-            info!("🔍 Returning data for SELECT VERSION() (Extended Query)");
-            let result = create_simple_query_result("version", vec![crate::query_handler::QueryValue::Text("WinCC Unified PostgreSQL Interface 1.0".to_string())]);
-            return Ok(super::response::format_query_result_as_extended_query_result(&result));
-        } else if query_without_semicolon == "SELECT CURRENT_DATABASE()" {
-            info!("🔍 Returning data for SELECT CURRENT_DATABASE() (Extended Query)");
-            let result = create_simple_query_result("current_database", vec![crate::query_handler::QueryValue::Text("system".to_string())]);
-            return Ok(super::response::format_query_result_as_extended_query_result(&result));
-        }
 
         // For other utility statements, just acknowledge
         return Ok(create_command_complete_wire_response(
@@ -166,35 +139,6 @@ pub(super) async fn handle_simple_query(
             return Ok(super::response::format_query_result_as_postgres_result(&result));
         }
 
-        // Handle SELECT statements with actual data (CSV format: header line, then data lines)
-        // Remove trailing semicolons for comparison
-        let query_without_semicolon = trimmed_query.trim_end_matches(';').trim();
-        if query_without_semicolon == "SELECT 1" {
-            info!("🔍 Returning data for SELECT 1");
-            // This is often used as a keep-alive, so we'll extend the session.
-            match session.client.extend_session(&session.token).await {
-                Ok(_) => debug!("Session extended successfully"),
-                Err(e) => warn!("Failed to extend session: {}", e),
-            }
-            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Text("1".to_string())]);
-            return Ok(super::response::format_query_result_as_postgres_result(&result));
-        } else if query_without_semicolon == "SELECT TRUE" {
-            info!("🔍 Returning data for SELECT TRUE");
-            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Boolean(true)]);
-            return Ok(super::response::format_query_result_as_postgres_result(&result));
-        } else if query_without_semicolon == "SELECT FALSE" {
-            info!("🔍 Returning data for SELECT FALSE");
-            let result = create_simple_query_result("?column?", vec![crate::query_handler::QueryValue::Boolean(false)]);
-            return Ok(super::response::format_query_result_as_postgres_result(&result));
-        } else if query_without_semicolon == "SELECT VERSION()" {
-            info!("🔍 Returning data for SELECT VERSION()");
-            let result = create_simple_query_result("version", vec![crate::query_handler::QueryValue::Text("WinCC Unified PostgreSQL Interface 1.0".to_string())]);
-            return Ok(super::response::format_query_result_as_postgres_result(&result));
-        } else if query_without_semicolon == "SELECT CURRENT_DATABASE()" {
-            info!("🔍 Returning data for SELECT CURRENT_DATABASE()");
-            let result = create_simple_query_result("current_database", vec![crate::query_handler::QueryValue::Text("system".to_string())]);
-            return Ok(super::response::format_query_result_as_postgres_result(&result));
-        }
 
         // For other utility statements, just acknowledge
         return Ok(create_command_complete_wire_response(
@@ -231,61 +175,34 @@ pub(super) fn is_transaction_control_statement(query: &str) -> bool {
 }
 
 pub(super) fn is_utility_statement(query: &str) -> bool {
-    // Common utility statements that PostgreSQL clients send
+    // Only handle truly non-SQL statements that can't be parsed by DataFusion
     let utility_patterns = [
-        // Session configuration - very common with Grafana
+        // Session configuration
         "SET ",
         "RESET ",
         "SHOW ",
-        // Client compatibility queries - Grafana sends these frequently
-        "SELECT VERSION()",
-        "SELECT CURRENT_DATABASE()",
-        "SELECT CURRENT_USER",
-        "SELECT CURRENT_SCHEMA",
-        "SELECT SESSION_USER",
-        "SELECT CURRENT_SETTING(",
-        "SELECT PG_BACKEND_PID()",
-        "SELECT PG_IS_IN_RECOVERY()",
-        // Information schema queries (common with BI tools like Grafana)
-        "SELECT * FROM INFORMATION_SCHEMA",
-        "SELECT * FROM PG_",
-        "SELECT SCHEMANAME FROM PG_",
-        "SELECT TABLENAME FROM PG_",
-        "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA",
-        // Grafana-specific queries for database introspection
-        "SELECT N.NSPNAME",
-        "SELECT C.RELNAME",
-        "SELECT A.ATTNAME",
-        "SELECT T.TYPNAME",
-        // DISCARD statements
+        // DISCARD statements (PostgreSQL-specific)
         "DISCARD ALL",
-        "DISCARD PLANS",
+        "DISCARD PLANS", 
         "DISCARD SEQUENCES",
         "DISCARD TEMPORARY",
-        // Listen/Notify (not supported but should not error)
+        // Listen/Notify (PostgreSQL-specific)
         "LISTEN ",
         "UNLISTEN ",
         "NOTIFY ",
-        // Vacuum and maintenance (not applicable)
+        // Maintenance commands (PostgreSQL-specific)
         "VACUUM",
-        "ANALYZE",
+        "ANALYZE", 
         "REINDEX",
-        // User/Role management (not supported)
+        // User/Role management (PostgreSQL-specific)
         "CREATE USER",
         "CREATE ROLE",
-        "ALTER USER",
+        "ALTER USER", 
         "ALTER ROLE",
         "DROP USER",
         "DROP ROLE",
         "GRANT ",
         "REVOKE ",
-        // Common compatibility checks
-        "SELECT 1",
-        "SELECT TRUE",
-        "SELECT FALSE",
-        // Timezone and encoding queries
-        "SELECT * FROM PG_TIMEZONE_",
-        "SELECT * FROM PG_ENCODING_",
     ];
 
     for pattern in &utility_patterns {
@@ -323,14 +240,7 @@ fn get_utility_command_tag(query: &str) -> String {
     } else if query.starts_with("RESET ") {
         "RESET".to_string()
     } else if query.starts_with("SHOW ") {
-        // For SHOW commands, we should return the actual result, but for now just acknowledge
         "SHOW".to_string()
-    } else if query.starts_with("SELECT VERSION()")
-        || query.starts_with("SELECT CURRENT_")
-        || query.starts_with("SELECT SESSION_USER")
-    {
-        // These should ideally return actual values, but for compatibility just acknowledge
-        "SELECT 1".to_string()
     } else if query.starts_with("DISCARD") {
         "DISCARD".to_string()
     } else if query.starts_with("LISTEN ") {
@@ -345,6 +255,16 @@ fn get_utility_command_tag(query: &str) -> String {
         "ANALYZE".to_string()
     } else if query.starts_with("REINDEX") {
         "REINDEX".to_string()
+    } else if query.starts_with("CREATE USER") || query.starts_with("CREATE ROLE") {
+        "CREATE".to_string()
+    } else if query.starts_with("ALTER USER") || query.starts_with("ALTER ROLE") {
+        "ALTER".to_string() 
+    } else if query.starts_with("DROP USER") || query.starts_with("DROP ROLE") {
+        "DROP".to_string()
+    } else if query.starts_with("GRANT ") {
+        "GRANT".to_string()
+    } else if query.starts_with("REVOKE ") {
+        "REVOKE".to_string()
     } else {
         "OK".to_string()
     }
