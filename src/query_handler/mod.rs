@@ -46,6 +46,9 @@ impl QueryHandler {
                     VirtualTable::ActiveAlarms => Self::execute_active_alarms_query(&query_info, session).await,
                     VirtualTable::LoggedAlarms => Self::execute_logged_alarms_query(&query_info, session).await,
                     VirtualTable::TagList => Self::execute_tag_list_query(&query_info, session).await,
+                    VirtualTable::InformationSchemaTables | VirtualTable::InformationSchemaColumns => {
+                        crate::information_schema::handle_information_schema_query(&query_info)
+                    }
                 }
             }
             SqlResult::SetStatement(set_command) => {

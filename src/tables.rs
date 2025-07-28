@@ -7,17 +7,28 @@ pub enum VirtualTable {
     ActiveAlarms,
     LoggedAlarms,
     TagList,
+    InformationSchemaTables,
+    InformationSchemaColumns,
 }
 
 impl VirtualTable {
     pub fn from_name(name: &str) -> Option<Self> {
-        match name.to_lowercase().as_str() {
-            "tagvalues" => Some(Self::TagValues),
-            "loggedtagvalues" => Some(Self::LoggedTagValues),
-            "activealarms" => Some(Self::ActiveAlarms),
-            "loggedalarms" => Some(Self::LoggedAlarms),
-            "taglist" => Some(Self::TagList),
-            _ => None,
+        let lower_name = name.to_lowercase();
+        if lower_name.starts_with("information_schema.") {
+            match lower_name.strip_prefix("information_schema.") {
+                Some("tables") => Some(Self::InformationSchemaTables),
+                Some("columns") => Some(Self::InformationSchemaColumns),
+                _ => None,
+            }
+        } else {
+            match lower_name.as_str() {
+                "tagvalues" => Some(Self::TagValues),
+                "loggedtagvalues" => Some(Self::LoggedTagValues),
+                "activealarms" => Some(Self::ActiveAlarms),
+                "loggedalarms" => Some(Self::LoggedAlarms),
+                "taglist" => Some(Self::TagList),
+                _ => None,
+            }
         }
     }
 
@@ -83,6 +94,66 @@ impl VirtualTable {
                 ("display_name", Type::TEXT),
                 ("object_type", Type::TEXT),
                 ("data_type", Type::TEXT),
+            ],
+            Self::InformationSchemaTables => vec![
+                ("table_catalog", Type::TEXT),
+                ("table_schema", Type::TEXT),
+                ("table_name", Type::TEXT),
+                ("table_type", Type::TEXT),
+                ("self_referencing_column_name", Type::TEXT),
+                ("reference_generation", Type::TEXT),
+                ("user_defined_type_catalog", Type::TEXT),
+                ("user_defined_type_schema", Type::TEXT),
+                ("user_defined_type_name", Type::TEXT),
+                ("is_insertable_into", Type::TEXT),
+                ("is_typed", Type::TEXT),
+                ("commit_action", Type::TEXT),
+            ],
+            Self::InformationSchemaColumns => vec![
+                ("table_catalog", Type::TEXT),
+                ("table_schema", Type::TEXT),
+                ("table_name", Type::TEXT),
+                ("column_name", Type::TEXT),
+                ("ordinal_position", Type::INT4),
+                ("column_default", Type::TEXT),
+                ("is_nullable", Type::TEXT),
+                ("data_type", Type::TEXT),
+                ("character_maximum_length", Type::INT4),
+                ("character_octet_length", Type::INT4),
+                ("numeric_precision", Type::INT4),
+                ("numeric_precision_radix", Type::INT4),
+                ("numeric_scale", Type::INT4),
+                ("datetime_precision", Type::INT4),
+                ("interval_type", Type::TEXT),
+                ("interval_precision", Type::INT4),
+                ("character_set_catalog", Type::TEXT),
+                ("character_set_schema", Type::TEXT),
+                ("character_set_name", Type::TEXT),
+                ("collation_catalog", Type::TEXT),
+                ("collation_schema", Type::TEXT),
+                ("collation_name", Type::TEXT),
+                ("domain_catalog", Type::TEXT),
+                ("domain_schema", Type::TEXT),
+                ("domain_name", Type::TEXT),
+                ("udt_catalog", Type::TEXT),
+                ("udt_schema", Type::TEXT),
+                ("udt_name", Type::TEXT),
+                ("scope_catalog", Type::TEXT),
+                ("scope_schema", Type::TEXT),
+                ("scope_name", Type::TEXT),
+                ("maximum_cardinality", Type::INT4),
+                ("dtd_identifier", Type::TEXT),
+                ("is_self_referencing", Type::TEXT),
+                ("is_identity", Type::TEXT),
+                ("identity_generation", Type::TEXT),
+                ("identity_start", Type::TEXT),
+                ("identity_increment", Type::TEXT),
+                ("identity_maximum", Type::TEXT),
+                ("identity_minimum", Type::TEXT),
+                ("identity_cycle", Type::TEXT),
+                ("is_generated", Type::TEXT),
+                ("generation_expression", Type::TEXT),
+                ("is_updatable", Type::TEXT),
             ],
         }
     }

@@ -74,15 +74,13 @@ impl SqlHandler {
 
         let table_name = match &select.from[0].relation {
             sqlparser::ast::TableFactor::Table { name, .. } => {
-                if name.0.len() != 1 {
-                    return Err(anyhow!("Complex table names are not supported"));
-                }
-                &name.0[0].value
+                let parts: Vec<String> = name.0.iter().map(|p| p.value.clone()).collect();
+                parts.join(".")
             }
             _ => return Err(anyhow!("Only simple table names are supported")),
         };
 
-        VirtualTable::from_name(table_name)
+        VirtualTable::from_name(&table_name)
             .ok_or_else(|| anyhow!("Unknown table: {}", table_name))
     }
 

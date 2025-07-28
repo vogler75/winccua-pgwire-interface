@@ -5,6 +5,7 @@ use tracing::{info, warn};
 
 mod auth;
 mod graphql;
+mod information_schema;
 mod pg_protocol;
 mod query_handler;
 mod sql_handler;
