@@ -378,6 +378,7 @@ async fn handle_describe_message(
                 {
                     match SqlHandler::parse_query(&statement.query) {
                         Ok(SqlResult::Query(query_info)) => {
+                            tracing::info!("🚀 Describe message: Generating RowDescription for Extended Query");
                             response.extend_from_slice(&create_row_description_response(&query_info));
                         }
                         _ => {

@@ -150,7 +150,9 @@ pub(super) async fn handle_simple_query(
     }
 
     // Use the new query handler for all SQL processing
+    tracing::info!("🚀 Calling QueryHandler::execute_query for: {}", query.trim());
     let result = crate::query_handler::QueryHandler::execute_query(query, session).await?;
+    tracing::info!("🚀 QueryHandler returned result, now calling format_query_result_as_postgres_result");
     Ok(super::response::format_query_result_as_postgres_result(&result))
 }
 
