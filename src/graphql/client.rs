@@ -65,7 +65,15 @@ impl GraphQLClient {
             return Err(anyhow!("GraphQL request failed with status: {}", response.status()));
         }
 
-        let login_response: LoginResponse = response.json().await?;
+        let response_text = response.text().await?;
+        debug!("📥 GraphQL response: {}", response_text);
+        
+        let login_response: LoginResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("❌ Failed to decode LoginResponse: {}", e);
+                error!("📥 Raw response was: {}", response_text);
+                anyhow!("Failed to decode LoginResponse: {}", e)
+            })?;
 
         debug!("Login response: {:?}", login_response);
 
@@ -149,7 +157,15 @@ impl GraphQLClient {
             return Err(anyhow!("GraphQL request failed with status: {}", response.status()));
         }
 
-        let tag_response: TagValuesResponse = response.json().await?;
+        let response_text = response.text().await?;
+        debug!("📥 GraphQL response: {}", response_text);
+        
+        let tag_response: TagValuesResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("❌ Failed to decode TagValuesResponse: {}", e);
+                error!("📥 Raw response was: {}", response_text);
+                anyhow!("Failed to decode TagValuesResponse: {}", e)
+            })?;
 
         if let Some(errors) = tag_response.errors {
             let error_msg = errors.iter()
@@ -380,7 +396,15 @@ impl GraphQLClient {
             return Err(anyhow!("GraphQL request failed with status: {}", response.status()));
         }
 
-        let alarms_response: ActiveAlarmsResponse = response.json().await?;
+        let response_text = response.text().await?;
+        debug!("📥 GraphQL response: {}", response_text);
+        
+        let alarms_response: ActiveAlarmsResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("❌ Failed to decode ActiveAlarmsResponse: {}", e);
+                error!("📥 Raw response was: {}", response_text);
+                anyhow!("Failed to decode ActiveAlarmsResponse: {}", e)
+            })?;
 
         if let Some(errors) = alarms_response.errors {
             let error_msg = errors.iter()
@@ -460,7 +484,15 @@ impl GraphQLClient {
             return Err(anyhow!("GraphQL request failed with status: {}", response.status()));
         }
 
-        let alarms_response: LoggedAlarmsResponse = response.json().await?;
+        let response_text = response.text().await?;
+        debug!("📥 GraphQL response: {}", response_text);
+        
+        let alarms_response: LoggedAlarmsResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("❌ Failed to decode LoggedAlarmsResponse: {}", e);
+                error!("📥 Raw response was: {}", response_text);
+                anyhow!("Failed to decode LoggedAlarmsResponse: {}", e)
+            })?;
 
         if let Some(errors) = alarms_response.errors {
             let error_msg = errors.iter()
@@ -519,7 +551,15 @@ impl GraphQLClient {
             return Err(anyhow!("GraphQL request failed with status: {}", status));
         }
 
-        let browse_response: BrowseResponse = response.json().await?;
+        let response_text = response.text().await?;
+        debug!("📥 GraphQL response: {}", response_text);
+        
+        let browse_response: BrowseResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("❌ Failed to decode BrowseResponse: {}", e);
+                error!("📥 Raw response was: {}", response_text);
+                anyhow!("Failed to decode BrowseResponse: {}", e)
+            })?;
 
         if let Some(errors) = browse_response.errors {
             let error_msg = errors.iter()
@@ -578,7 +618,15 @@ impl GraphQLClient {
             return Err(anyhow!("GraphQL request failed with status: {}", status));
         }
 
-        let browse_response: BrowseResponse = response.json().await?;
+        let response_text = response.text().await?;
+        debug!("📥 GraphQL response: {}", response_text);
+        
+        let browse_response: BrowseResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("❌ Failed to decode BrowseResponse: {}", e);
+                error!("📥 Raw response was: {}", response_text);
+                anyhow!("Failed to decode BrowseResponse: {}", e)
+            })?;
 
         if let Some(errors) = browse_response.errors {
             let error_msg = errors.iter()
@@ -639,7 +687,15 @@ impl GraphQLClient {
             return Err(anyhow!("GraphQL request failed with status: {}", status));
         }
 
-        let browse_response: BrowseResponse = response.json().await?;
+        let response_text = response.text().await?;
+        debug!("📥 GraphQL response: {}", response_text);
+        
+        let browse_response: BrowseResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("❌ Failed to decode BrowseResponse: {}", e);
+                error!("📥 Raw response was: {}", response_text);
+                anyhow!("Failed to decode BrowseResponse: {}", e)
+            })?;
 
         if let Some(errors) = browse_response.errors {
             let error_msg = errors.iter()
@@ -693,7 +749,15 @@ impl GraphQLClient {
             ));
         }
 
-        let extend_session_response: ExtendSessionResponse = response.json().await?;
+        let response_text = response.text().await?;
+        debug!("📥 GraphQL response: {}", response_text);
+        
+        let extend_session_response: ExtendSessionResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("❌ Failed to decode ExtendSessionResponse: {}", e);
+                error!("📥 Raw response was: {}", response_text);
+                anyhow!("Failed to decode ExtendSessionResponse: {}", e)
+            })?;
 
         if let Some(errors) = extend_session_response.errors {
             let error_msg = errors
@@ -725,7 +789,7 @@ impl GraphQLClient {
             }
         }
 
-        info!("Successfully extended session");
+        info!("✅ Successfully extended session");
         Ok(session)
     }
 }
@@ -749,7 +813,7 @@ pub async fn validate_connection(url: &str) -> Result<()> {
     
     if response.status().is_success() {
         let response_text = response.text().await?;
-        debug!("GraphQL introspection response: {}", response_text);
+        debug!("📥 GraphQL response: {}", response_text);
         
         // Check if it's a valid GraphQL response
         if response_text.contains("\"data\"") || response_text.contains("\"__schema\"") {
@@ -792,7 +856,7 @@ async fn validate_with_simple_query(client: &Client, url: &str) -> Result<()> {
     
     if response.status().is_success() {
         let response_text = response.text().await?;
-        debug!("Simple query response: {}", response_text);
+        debug!("📥 GraphQL response: {}", response_text);
         
         if response_text.contains("\"data\"") {
             return Ok(());

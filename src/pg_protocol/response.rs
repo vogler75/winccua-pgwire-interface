@@ -481,12 +481,12 @@ pub(super) fn create_empty_row_description_response() -> Vec<u8> {
 pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handler::QueryResult) -> Vec<u8> {
     let mut response = Vec::new();
     
-    tracing::info!("🚀 format_query_result_as_postgres_result() CALLED with {} columns, {} rows", result.columns.len(), result.rows.len());
-    tracing::info!("🚀 Columns: {:?}", result.columns);
-    tracing::info!("🚀 Column types: {:?}", result.column_types);
+    tracing::debug!("🚀 format_query_result_as_postgres_result() CALLED with {} columns, {} rows", result.columns.len(), result.rows.len());
+    tracing::debug!("🚀 Columns: {:?}", result.columns);
+    tracing::debug!("🚀 Column types: {:?}", result.column_types);
     
     // RowDescription message: 'T' (RowDescription) + length + field_count + fields
-    tracing::info!("🚀 Creating RowDescription message ('T') with {} columns", result.columns.len());
+    tracing::debug!("🚀 Creating RowDescription message ('T') with {} columns", result.columns.len());
     response.push(b'T'); // 'T' = RowDescription message
     
     let mut fields_data = Vec::new();
@@ -506,7 +506,7 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
         } else {
             25 // TEXT
         };
-        tracing::info!("🚀 RowDescription: Column '{}' -> PostgreSQL OID {} ({})", 
+        tracing::debug!("🚀 RowDescription: Column '{}' -> PostgreSQL OID {} ({})", 
             column_name, type_oid, postgres_type_name(type_oid));
         fields_data.extend_from_slice(&type_oid.to_be_bytes());
         
@@ -595,7 +595,7 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
     response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
     response.push(b'I'); // Status: 'I' = idle (not in transaction)
     
-    tracing::debug!("🔧 Complete PostgreSQL response: {} bytes total", response.len());
+    tracing::info!("🔧 Complete PostgreSQL response: {} bytes total", response.len());
     
     response
 }

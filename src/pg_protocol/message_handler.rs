@@ -89,7 +89,7 @@ async fn handle_simple_query_message(
         .map_err(|_| anyhow!("Invalid UTF-8 in query"))?
         .trim_end_matches('\0');
 
-    info!("📥 Simple Query: {}", query_str.trim());
+    info!("📥 SQL Query: {}", query_str.trim());
 
     match handle_simple_query(query_str, session).await {
         Ok(response) => Ok(response),

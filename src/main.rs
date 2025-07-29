@@ -1,7 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
+use std::fmt;
 use std::net::SocketAddr;
 use tracing::{info, warn};
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
+use tracing_subscriber::registry::LookupSpan;
 
 mod auth;
 mod datafusion_handler;
@@ -12,6 +16,52 @@ mod query_handler;
 mod sql_handler;
 mod tables;
 mod tls;
+
+// Custom formatter for consistent module name width
+const MODULE_NAME_WIDTH: usize = 40;
+
+struct CustomFormatter;
+
+impl<S, N> FormatEvent<S, N> for CustomFormatter
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> fmt::Result {
+        let metadata = event.metadata();
+        
+        // Format timestamp
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(now.as_secs() as i64, now.subsec_nanos())
+            .unwrap_or_default();
+        
+        // Format module name with fixed width (right-padded) and remove common prefix
+        let target = metadata.target();
+        let cleaned_target = target.strip_prefix("winccua_pgwire_protocol::").unwrap_or(target);
+        let padded_target = format!("{:<width$}", cleaned_target, width = MODULE_NAME_WIDTH);
+        
+        // Write formatted log line
+        write!(
+            writer,
+            "{} {:>5} {}: ",
+            datetime.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
+            metadata.level(),
+            padded_target
+        )?;
+        
+        // Format the event fields
+        ctx.format_fields(writer.by_ref(), event)?;
+        
+        writeln!(writer)
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "winccua-pgwire-protocol")]
@@ -64,7 +114,7 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("GRAPHQL_HTTP_URL").ok())
         .expect("GraphQL URL must be provided via --graphql-url or GRAPHQL_HTTP_URL environment variable");
 
-    // Initialize logging
+    // Initialize logging with custom formatter for consistent module name width
     let log_level = if args.debug { "debug" } else { "info" };
     tracing_subscriber::fmt()
         .with_env_filter(format!(
@@ -73,6 +123,7 @@ async fn main() -> Result<()> {
             log_level,
             log_level
         ))
+        .event_format(CustomFormatter)
         .init();
 
     info!("Starting WinCC UA PostgreSQL Wire Protocol Server");
