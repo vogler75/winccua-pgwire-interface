@@ -216,8 +216,6 @@ pub struct QueryHandler;
 
 impl QueryHandler {
     pub async fn execute_query(sql: &str, session: &AuthenticatedSession) -> Result<QueryResult> {
-        info!("🔍 Executing SQL query: {}", sql.trim());
-
         // Parse the SQL query
         let sql_result = match SqlHandler::parse_query(sql) {
             Ok(result) => result,

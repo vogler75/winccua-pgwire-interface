@@ -1,6 +1,6 @@
-# WinCC UA PostgreSQL Wire Protocol Server
+# WinCC Unified PostgreSQL Wire Protocol Server
 
-A PostgreSQL wire protocol server that acts as a proxy to a WinCC UA GraphQL backend, allowing SQL clients to query industrial automation data.
+A PostgreSQL wire protocol server that acts as a proxy to a WinCC Unified GraphQL backend, allowing SQL clients to query industrial automation data.
 
 ## Features
 
@@ -19,7 +19,7 @@ A PostgreSQL wire protocol server that acts as a proxy to a WinCC UA GraphQL bac
 ### Prerequisites
 
 - Rust 1.70+ 
-- Access to a WinCC UA GraphQL server
+- Access to a WinCC Unified GraphQL server
 
 ### Installation
 
