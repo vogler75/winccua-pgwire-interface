@@ -45,7 +45,14 @@ impl GraphQLClient {
             },
         };
 
-        debug!("Sending login request for user: {}", username);
+        debug!("🚀 Executing GraphQL mutation: login");
+        debug!("📄 Query: {}", query);
+        // Don't log password in production, but show the structure
+        let safe_variables = serde_json::json!({
+            "username": username,
+            "password": "***REDACTED***"
+        });
+        debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&safe_variables).unwrap_or_else(|_| "Failed to serialize variables".to_string()));
         
         let response = self
             .client
@@ -126,7 +133,9 @@ impl GraphQLClient {
             },
         };
 
-        debug!("Getting tag values with {} names", request.variables.names.len());
+        debug!("🚀 Executing GraphQL query: get_tag_values");
+        debug!("📄 Query: {}", query);
+        debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&request.variables).unwrap_or_else(|_| "Failed to serialize variables".to_string()));
 
         let response = self
             .client
@@ -204,10 +213,9 @@ impl GraphQLClient {
             },
         };
 
-        debug!("🚀 Generated GraphQL query:");
+        debug!("🚀 Executing GraphQL query: get_logged_tag_values");
         debug!("📄 Query: {}", query);
-        debug!("🔧 Variables: {:#?}", request.variables);
-        debug!("Getting logged tag values");
+        debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&request.variables).unwrap_or_else(|_| "Failed to serialize variables".to_string()));
 
         let response = self
             .client
@@ -356,7 +364,9 @@ impl GraphQLClient {
             },
         };
 
-        debug!("Getting active alarms");
+        debug!("🚀 Executing GraphQL query: get_active_alarms");
+        debug!("📄 Query: {}", query);
+        debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&request.variables).unwrap_or_else(|_| "Failed to serialize variables".to_string()));
 
         let response = self
             .client
@@ -397,8 +407,8 @@ impl GraphQLClient {
         filter_language: Option<String>,
     ) -> Result<Vec<LoggedAlarm>> {
         let query = r#"
-            query LoggedAlarms($systemNames: [String], $filterString: String, $filterLanguage: String, $startTime: Timestamp, $endTime: Timestamp, $maxNumberOfResults: Int) {
-                loggedAlarms(systemNames: $systemNames, filterString: $filterString, filterLanguage: $filterLanguage, startTime: $startTime, endTime: $endTime, maxNumberOfResults: $maxNumberOfResults) {
+            query LoggedAlarms($systemNames: [String], $filterString: String, $filterLanguage: String, $languages: [String], $startTime: Timestamp, $endTime: Timestamp, $maxNumberOfResults: Int) {
+                loggedAlarms(systemNames: $systemNames, filterString: $filterString, filterLanguage: $filterLanguage, languages: $languages, startTime: $startTime, endTime: $endTime, maxNumberOfResults: $maxNumberOfResults) {
                     name
                     instanceID
                     alarmGroupID
@@ -434,10 +444,9 @@ impl GraphQLClient {
             },
         };
 
-        debug!("🚀 Generated GraphQL query:");
+        debug!("🚀 Executing GraphQL query: get_logged_alarms");
         debug!("📄 Query: {}", query);
-        debug!("🔧 Variables: {:#?}", request.variables);
-        debug!("Getting logged alarms");
+        debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&request.variables).unwrap_or_else(|_| "Failed to serialize variables".to_string()));
 
         let response = self
             .client
@@ -469,8 +478,8 @@ impl GraphQLClient {
 
     pub async fn browse_tags(&self, token: &str, name_filters: Vec<String>) -> Result<Vec<BrowseResult>> {
         let query = r#"
-            query Browse($nameFilters: [String!]!) {
-                browse(nameFilters: $nameFilters) {
+            query Browse($nameFilters: [String!]!, $objectTypeFilters: [ObjectTypesEnum!]!, $baseTypeFilters: [String!]!, $language: String!) {
+                browse(nameFilters: $nameFilters, objectTypeFilters: $objectTypeFilters, baseTypeFilters: $baseTypeFilters, language: $language) {
                     name
                     displayName
                     objectType
@@ -489,10 +498,9 @@ impl GraphQLClient {
             },
         };
 
-        debug!("🚀 Generated GraphQL query:");
+        debug!("🚀 Executing GraphQL query: browse_tags");
         debug!("📄 Query: {}", query);
-        debug!("🔧 Variables: {:#?}", request.variables);
-        debug!("Browsing tags");
+        debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&request.variables).unwrap_or_else(|_| "Failed to serialize variables".to_string()));
 
         let response = self
             .client
@@ -529,8 +537,8 @@ impl GraphQLClient {
 
     pub async fn browse_tags_with_object_type(&self, token: &str, name_filters: Vec<String>, object_type_filters: Vec<String>, language: String) -> Result<Vec<BrowseResult>> {
         let query = r#"
-            query Browse($nameFilters: [String!]!, $objectTypeFilters: [ObjectTypesEnum!]!, $language: String!) {
-                browse(nameFilters: $nameFilters, objectTypeFilters: $objectTypeFilters, language: $language) {
+            query Browse($nameFilters: [String!]!, $objectTypeFilters: [ObjectTypesEnum!]!, $baseTypeFilters: [String!]!, $language: String!) {
+                browse(nameFilters: $nameFilters, objectTypeFilters: $objectTypeFilters, baseTypeFilters: $baseTypeFilters, language: $language) {
                     name
                     displayName
                     objectType
@@ -549,10 +557,9 @@ impl GraphQLClient {
             },
         };
 
-        debug!("🚀 Generated GraphQL query:");
+        debug!("🚀 Executing GraphQL query: browse_tags_with_object_type");
         debug!("📄 Query: {}", query);
-        debug!("🔧 Variables: {:#?}", request.variables);
-        debug!("Browsing tags with object type filters");
+        debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&request.variables).unwrap_or_else(|_| "Failed to serialize variables".to_string()));
 
         let response = self
             .client
@@ -611,10 +618,9 @@ impl GraphQLClient {
             },
         };
 
-        debug!("Browsing logging tags with objectTypeFilters=LOGGINGTAG");
-        debug!("GraphQL query: {}", query_with_filters);
-        debug!("GraphQL variables: nameFilters={:?}, objectTypeFilters={:?}", 
-               request_with_filters.variables.name_filters, request_with_filters.variables.object_type_filters);
+        debug!("🚀 Executing GraphQL query: browse_logging_tags");
+        debug!("📄 Query: {}", query_with_filters);
+        debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&request_with_filters.variables).unwrap_or_else(|_| "Failed to serialize variables".to_string()));
 
         let response = self
             .client
@@ -668,7 +674,9 @@ impl GraphQLClient {
             "query": query,
         });
 
-        debug!("Sending extendSession request");
+        debug!("🚀 Executing GraphQL mutation: extend_session");
+        debug!("📄 Query: {}", query);
+        debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&serde_json::json!({})).unwrap_or_else(|_| "{}".to_string()));
 
         let response = self
             .client
@@ -730,7 +738,9 @@ pub async fn validate_connection(url: &str) -> Result<()> {
         "query": "{ __schema { queryType { name } } }"
     });
     
-    debug!("Attempting GraphQL introspection query to: {}", url);
+    debug!("🚀 Executing GraphQL query: introspection");
+    debug!("📄 Query: {{ __schema {{ queryType {{ name }} }} }}");
+    debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&serde_json::json!({})).unwrap_or_else(|_| "{}".to_string()));
     let response = client
         .post(url)
         .json(&introspection_query)
@@ -771,7 +781,9 @@ async fn validate_with_simple_query(client: &Client, url: &str) -> Result<()> {
         "query": "{ __typename }"
     });
     
-    debug!("Attempting simple GraphQL query to: {}", url);
+    debug!("🚀 Executing GraphQL query: simple_validation");
+    debug!("📄 Query: {{ __typename }}");
+    debug!("🔧 Variables (JSON): {}", serde_json::to_string_pretty(&serde_json::json!({})).unwrap_or_else(|_| "{}".to_string()));
     let response = client
         .post(url)
         .json(&simple_query)

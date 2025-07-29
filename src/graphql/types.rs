@@ -297,6 +297,7 @@ pub struct BrowseVariables {
     pub language: String,
 }
 
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowseResponse {
     pub data: Option<BrowseData>,

@@ -396,7 +396,10 @@ class WinCCTestSuite:
             
             (15, "Information Schema - Columns", 
              """SELECT * FROM information_schema.columns
-                ORDER BY table_name, ordinal_position;""")
+                ORDER BY table_name, ordinal_position;"""),
+            
+            (16, "Tag Values - HMI Tag Pattern with Double Colon", 
+             """select * from tagvalues where tag_name like '%::%HMI_%' order by tag_name;""")
         ]
     
     def run_tests(self, query_filter: Optional[int] = None) -> bool:

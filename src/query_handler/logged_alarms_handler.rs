@@ -13,9 +13,10 @@ impl QueryHandler {
     ) -> Result<Vec<crate::graphql::types::LoggedAlarm>> {
         info!("📚 Fetching LoggedAlarms data");
 
-        // Get modification_time range (prioritize over timestamp)
+        // Get time range (prioritize raise_time over modification_time over timestamp)
         let (start_time, mut end_time) = query_info
-            .get_modification_time_filter()
+            .get_raise_time_filter()
+            .or_else(|| query_info.get_modification_time_filter())
             .or_else(|| query_info.get_timestamp_filter())
             .unwrap_or((None, None));
 
@@ -79,9 +80,10 @@ impl QueryHandler {
     ) -> Result<super::QueryResult> {
         info!("📚 Executing LoggedAlarms query");
 
-        // Get modification_time range (prioritize over timestamp)
+        // Get time range (prioritize raise_time over modification_time over timestamp)
         let (start_time, mut end_time) = query_info
-            .get_modification_time_filter()
+            .get_raise_time_filter()
+            .or_else(|| query_info.get_modification_time_filter())
             .or_else(|| query_info.get_timestamp_filter())
             .unwrap_or((None, None));
 

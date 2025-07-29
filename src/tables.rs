@@ -522,4 +522,43 @@ impl QueryInfo {
             None
         }
     }
+
+    pub fn get_raise_time_filter(&self) -> Option<(Option<String>, Option<String>)> {
+        let mut start_time = None;
+        let mut end_time = None;
+
+        for filter in &self.filters {
+            if filter.column == "raise_time" {
+                match &filter.operator {
+                    FilterOperator::GreaterThan | FilterOperator::GreaterThanOrEqual => {
+                        if let FilterValue::Timestamp(ts) = &filter.value {
+                            start_time = Some(ts.clone());
+                        }
+                    }
+                    FilterOperator::LessThan | FilterOperator::LessThanOrEqual => {
+                        if let FilterValue::Timestamp(ts) = &filter.value {
+                            end_time = Some(ts.clone());
+                        }
+                    }
+                    FilterOperator::Between => {
+                        if let FilterValue::Range(start, end) = &filter.value {
+                            if let FilterValue::Timestamp(ts) = start.as_ref() {
+                                start_time = Some(ts.clone());
+                            }
+                            if let FilterValue::Timestamp(ts) = end.as_ref() {
+                                end_time = Some(ts.clone());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if start_time.is_some() || end_time.is_some() {
+            Some((start_time, end_time))
+        } else {
+            None
+        }
+    }
 }
