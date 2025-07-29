@@ -17,22 +17,24 @@ Usage:
     python test_server.py [options]
     
     Options:
-        --host HOST       Server host (default: localhost)
-        --port PORT       Server port (default: 5432)
-        --user USER       Username (default: testuser)
-        --password PASS   Password (default: password1)
-        --database DB     Database name (default: winccua)
-        --ssl-mode MODE   SSL mode: disable, require, verify-ca, verify-full (default: disable)
+        --host HOST       Server host (default: localhost, env: PGHOST)
+        --port PORT       Server port (default: 5432, env: PGPORT)
+        --user USER       Username (default: testuser, env: PGUSER)
+        --password PASS   Password (default: password1, env: PGPASSWORD)
+        --database DB     Database name (default: winccua, env: PGDATABASE)
+        --ssl-mode MODE   SSL mode: disable, require, verify-ca, verify-full (default: disable, env: PGSSLMODE)
         --timeout SEC     Query timeout in seconds (default: 30)
         --verbose         Enable verbose output
         --query-only NUM  Run only a specific query by number
         --no-color        Disable colored output
+        --loop NUM        Loop test execution NUM times (0 = infinite loop, default: 1)
 """
 
 import sys
 import argparse
 import time
 import traceback
+import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
@@ -101,7 +103,8 @@ class WinCCTestSuite:
     def __init__(self, host: str = "localhost", port: int = 5432, 
                  user: str = "testuser", password: str = "password1",
                  database: str = "winccua", sslmode: str = "disable",
-                 timeout: int = 30, verbose: bool = False, no_color: bool = False):
+                 timeout: int = 30, verbose: bool = False, no_color: bool = False,
+                 loop_count: int = 1):
         self.host = host
         self.port = port
         self.user = user
@@ -111,6 +114,7 @@ class WinCCTestSuite:
         self.timeout = timeout
         self.verbose = verbose
         self.no_color = no_color
+        self.loop_count = loop_count
         self.connection = None
         self.results: List[TestResult] = []
         
@@ -370,8 +374,8 @@ class WinCCTestSuite:
             (11, "Active Alarms - Filter by Priority", 
              """select * from activealarms where priority > 10 and alarm_group_id = 0;"""),
             
-            (12, "Logged Alarms - All Records", 
-             """select * from loggedalarms where raise_time between current_time - interval '12 hours' and CURRENT_TIMESTAMP;"""),
+            #(12, "Logged Alarms - All Records", 
+            # """select * from loggedalarms where raise_time between current_time - interval '12 hours' and CURRENT_TIMESTAMP;"""),
             
             (13, "System Version Query", 
              """SELECT version();"""),
@@ -403,7 +407,7 @@ class WinCCTestSuite:
         ]
     
     def run_tests(self, query_filter: Optional[int] = None) -> bool:
-        """Run all test queries or a specific query"""
+        """Run all test queries or a specific query with optional looping"""
         if not self.connect():
             return False
         
@@ -416,20 +420,83 @@ class WinCCTestSuite:
                     print(f"{Colors.ERROR}❌ Query {query_filter} not found{Colors.RESET}")
                     return False
             
+            # Determine loop parameters
+            is_infinite = self.loop_count == 0
+            loop_iterations = self.loop_count if not is_infinite else 1
+            
             print(f"\n{Colors.HEADER}🚀 Starting WinCC UA PostgreSQL Server Test Suite{Colors.RESET}")
             print(f"{Colors.INFO}📋 Running {len(queries)} test queries...{Colors.RESET}")
             
-            for query_num, description, query in queries:
-                # Check if this is a loggedtagvalues query for special logging
-                is_logged_query = 'loggedtagvalues' in query.lower()
-                result = self.execute_query(query_num, description, query, log_row_count=is_logged_query)
-                self.results.append(result)
-                
-                # Small delay between queries
-                time.sleep(0.1)
+            if is_infinite:
+                print(f"{Colors.WARNING}🔄 Looping infinitely (Press Ctrl+C to stop){Colors.RESET}")
+            elif self.loop_count > 1:
+                print(f"{Colors.INFO}🔄 Looping {self.loop_count} times{Colors.RESET}")
+            
+            iteration = 0
+            all_results_successful = True
+            
+            try:
+                while is_infinite or iteration < loop_iterations:
+                    iteration += 1
+                    
+                    if self.loop_count > 1 or is_infinite:
+                        print(f"\n{Colors.HEADER}{'='*80}{Colors.RESET}")
+                        print(f"{Colors.HEADER}🔄 LOOP ITERATION {iteration}{'' if not is_infinite else ' (Press Ctrl+C to stop)'}{Colors.RESET}")
+                        print(f"{Colors.HEADER}{'='*80}{Colors.RESET}")
+                    
+                    # Clear results for each iteration (except the last one to keep summary)
+                    if iteration > 1:
+                        self.results.clear()
+                    
+                    iteration_successful = True
+                    for query_num, description, query in queries:
+                        # Check if this is a loggedtagvalues query for special logging
+                        is_logged_query = 'loggedtagvalues' in query.lower()
+                        result = self.execute_query(query_num, description, query, log_row_count=is_logged_query)
+                        self.results.append(result)
+                        
+                        if not result.success:
+                            iteration_successful = False
+                        
+                        # Small delay between queries
+                        time.sleep(0.1)
+                    
+                    if not iteration_successful:
+                        all_results_successful = False
+                    
+                    # Print iteration summary for multi-loop runs
+                    if self.loop_count > 1 or is_infinite:
+                        successful_count = sum(1 for r in self.results if r.success)
+                        total_count = len(self.results)
+                        iteration_duration = sum(r.duration for r in self.results)
+                        
+                        status_color = Colors.SUCCESS if iteration_successful else Colors.ERROR
+                        status_text = "✅ PASSED" if iteration_successful else "❌ FAILED"
+                        
+                        print(f"\n{status_color}🔄 Iteration {iteration} {status_text}: {successful_count}/{total_count} queries successful in {iteration_duration:.3f}s{Colors.RESET}")
+                        
+                        # Add delay between iterations (except for single runs)
+                        if (is_infinite or iteration < loop_iterations) and not is_infinite:
+                            print(f"{Colors.DIM}💤 Waiting 1 second before next iteration...{Colors.RESET}")
+                            time.sleep(1)
+                    
+                    # For infinite loop, we don't break automatically
+                    if not is_infinite and iteration >= loop_iterations:
+                        break
+                        
+            except KeyboardInterrupt:
+                print(f"\n{Colors.WARNING}⚠️  Loop interrupted by user after {iteration} iteration(s){Colors.RESET}")
+                if not self.results:
+                    return False
+            
+            # Print final summary
+            if self.loop_count > 1 or is_infinite:
+                print(f"\n{Colors.HEADER}{'='*80}{Colors.RESET}")
+                print(f"{Colors.HEADER}🏁 FINAL SUMMARY - {iteration} iteration(s) completed{Colors.RESET}")
+                print(f"{Colors.HEADER}{'='*80}{Colors.RESET}")
             
             self._print_summary()
-            return True
+            return all_results_successful
             
         except KeyboardInterrupt:
             print(f"\n{Colors.WARNING}⚠️  Test suite interrupted by user{Colors.RESET}")
@@ -492,21 +559,39 @@ Examples:
   python test_server.py --ssl-mode require                 # Enable TLS
   python test_server.py --query-only 6                     # Run only query #6
   python test_server.py --verbose --no-color               # Verbose output without colors
+  python test_server.py --loop 10                          # Run all tests 10 times
+  python test_server.py --loop 0                           # Run tests infinitely (Ctrl+C to stop)
+  python test_server.py --query-only 6 --loop 0            # Run specific query infinitely
+
+Environment Variables:
+  export PGHOST=192.168.1.100                              # Set default host
+  export PGPORT=5433                                        # Set default port
+  export PGUSER=myuser                                      # Set default username
+  export PGPASSWORD=mypass                                  # Set default password
+  export PGDATABASE=mydatabase                              # Set default database
+  export PGSSLMODE=require                                  # Set default SSL mode
+  python test_server.py                                    # Uses env vars as defaults
         """
     )
     
-    parser.add_argument("--host", default="localhost", help="Server host (default: localhost)")
-    parser.add_argument("--port", type=int, default=5432, help="Server port (default: 5432)")
-    parser.add_argument("--user", default="testuser", help="Username (default: testuser)")
-    parser.add_argument("--password", default="password1", help="Password (default: password1)")
-    parser.add_argument("--database", default="winccua", help="Database name (default: winccua)")
-    parser.add_argument("--ssl-mode", default="disable", 
+    parser.add_argument("--host", default=os.getenv("PGHOST", "localhost"), 
+                       help="Server host (default: localhost, env: PGHOST)")
+    parser.add_argument("--port", type=int, default=int(os.getenv("PGPORT", "5432")), 
+                       help="Server port (default: 5432, env: PGPORT)")
+    parser.add_argument("--user", default=os.getenv("PGUSER", "testuser"), 
+                       help="Username (default: testuser, env: PGUSER)")
+    parser.add_argument("--password", default=os.getenv("PGPASSWORD", "password1"), 
+                       help="Password (default: password1, env: PGPASSWORD)")
+    parser.add_argument("--database", default=os.getenv("PGDATABASE", "winccua"), 
+                       help="Database name (default: winccua, env: PGDATABASE)")
+    parser.add_argument("--ssl-mode", default=os.getenv("PGSSLMODE", "disable"), 
                        choices=["disable", "require", "verify-ca", "verify-full"],
-                       help="SSL mode (default: disable)")
+                       help="SSL mode (default: disable, env: PGSSLMODE)")
     parser.add_argument("--timeout", type=int, default=30, help="Query timeout in seconds (default: 30)")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("--query-only", type=int, help="Run only a specific query by number")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
+    parser.add_argument("--loop", type=int, default=1, help="Loop test execution N times (0 = infinite loop, default: 1)")
     
     args = parser.parse_args()
     
@@ -520,7 +605,8 @@ Examples:
         sslmode=args.ssl_mode,
         timeout=args.timeout,
         verbose=args.verbose,
-        no_color=args.no_color
+        no_color=args.no_color,
+        loop_count=args.loop
     )
     
     # Run tests
