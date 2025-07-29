@@ -14,10 +14,10 @@ WinCC UA PostgreSQL Wire Protocol Server - A Rust-based PostgreSQL wire protocol
 cargo build --release
 
 # Run server (default port 5432)
-cargo run -- --bind-addr 127.0.0.1:5432
+cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432
 
 # Run with debug logging
-RUST_LOG=debug cargo run -- --debug --bind-addr 127.0.0.1:5433
+RUST_LOG=debug cargo run -- --graphql-url http://your-wincc-server:4000/graphql --debug --bind-addr 127.0.0.1:5433
 ```
 
 ### Testing
@@ -30,17 +30,21 @@ python test_datagrip.py
 
 ### Environment Setup
 ```bash
-# Set GraphQL endpoint (required)
-export GRAPHQL_HTTP_URL=http://your-wincc-server:4000/graphql
+# GraphQL endpoint is now provided via command line argument --graphql-url
+# No environment variables are required
 ```
 
 ## Architecture
 
-The server acts as a translation layer:
+The server acts as a translation layer with DataFusion integration:
 1. Receives SQL queries via PostgreSQL wire protocol
-2. Parses SQL and translates to GraphQL queries
-3. Executes GraphQL queries against WinCC backend
-4. Formats results as PostgreSQL responses
+2. Parses SQL using DataFusion's sqlparser (unified with DataFusion execution)
+3. Routes queries based on complexity:
+   - Simple queries → Direct GraphQL translation
+   - Complex queries → DataFusion in-memory processing
+4. Executes GraphQL queries against WinCC backend
+5. For complex queries: loads data into DataFusion Arrow tables and executes SQL
+6. Formats results as PostgreSQL responses
 
 ### Key Components
 
@@ -81,7 +85,9 @@ The server acts as a translation layer:
 ## Key Implementation Details
 
 - Uses `pgwire` crate for PostgreSQL protocol implementation
+- **SQL parsing uses DataFusion's sqlparser** (same parser used for DataFusion execution)
 - All GraphQL communication goes through `src/graphql/client.rs`
+- DataFusion integration via `src/datafusion_handler.rs` for complex queries
 - Debug logging uses emoji indicators (🚀 startup, 📨 incoming, 📤 outgoing, etc.)
 - Supports Extended Query Protocol for prepared statements
 - Virtual tables defined in `create_table_function()` in `tables.rs`
@@ -90,7 +96,7 @@ The server acts as a translation layer:
 ## Important Notes
 
 - SSL/TLS not yet implemented (returns 'N' during negotiation)
-- GraphQL endpoint must be configured via GRAPHQL_HTTP_URL environment variable
+- GraphQL endpoint must be provided via --graphql-url command line argument
 - All timestamp comparisons use ISO 8601 format
 - LIKE patterns support % and _ wildcards
 - Authentication credentials passed to GraphQL backend via headers

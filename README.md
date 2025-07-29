@@ -32,14 +32,11 @@ cargo build --release
 ### Usage
 
 ```bash
-# Set GraphQL server URL
-export GRAPHQL_HTTP_URL="http://your-wincc-server/graphql"
+# Start the server with GraphQL URL as argument
+cargo run -- --graphql-url "http://your-wincc-server/graphql" --bind-addr 127.0.0.1:5432
 
-# Start the server
-cargo run -- --bind-addr 127.0.0.1:5432
-
-# Or specify GraphQL URL directly
-cargo run -- --graphql-url "http://your-server/graphql" --bind-addr 127.0.0.1:5432
+# Alternative port (if 5432 is already in use)
+cargo run -- --graphql-url "http://your-wincc-server/graphql" --bind-addr 127.0.0.1:5433
 ```
 
 **Testing with psql**:
@@ -59,9 +56,12 @@ SELECT name, priority FROM activealarms WHERE priority >= 10;
 
 #### Debug Mode and Testing
 
-```
-source setenv.sh
-RUST_LOG=debug cargo run -- --debug --bind-addr 127.0.0.1:5433
+```bash
+# Run with debug logging enabled
+cargo run -- --graphql-url "http://your-wincc-server/graphql" --debug --bind-addr 127.0.0.1:5433
+
+# Or with environment variable for more detailed Rust logging
+RUST_LOG=debug cargo run -- --graphql-url "http://your-wincc-server/graphql" --debug --bind-addr 127.0.0.1:5433
 ```
 
 The debug mode shows detailed connection information including:
@@ -241,20 +241,19 @@ The server supports SQL LIKE patterns with wildcards (`%` and `_`) for tag_name 
 
 ## Configuration
 
-### Environment Variables
-
-- `GRAPHQL_HTTP_URL` - GraphQL server endpoint
-- `RUST_LOG` - Logging level (debug, info, warn, error)
-
 ### Command Line Options
 
 ```
 Options:
   --bind-addr <BIND_ADDR>        Address to bind the server [default: 127.0.0.1:5432]
-  --graphql-url <GRAPHQL_URL>    GraphQL server URL
+  --graphql-url <GRAPHQL_URL>    GraphQL server URL (required)
   --debug                        Enable debug logging
   -h, --help                     Print help
 ```
+
+### Environment Variables (Optional)
+
+- `RUST_LOG` - Logging level (debug, info, warn, error) - for detailed Rust internal logging
 
 📋 **Future Enhancements:**
 - SSL/TLS support
@@ -263,15 +262,37 @@ Options:
 
 ```
 PostgreSQL Client
-       ↓ (SQL queries)
+       ↓ (SQL queries via PostgreSQL wire protocol)
 PostgreSQL Wire Protocol Server
-       ↓ (Parse SQL) 
-Query Translator
-       ↓ (GraphQL queries)
+       ↓ (SQL parsing via DataFusion's sqlparser)
+SQL Query Handler
+       ↓ (Parse query structure and filters)
+Query Translator  
+       ↓ (GraphQL queries with parsed filters)
 WinCC Unified GraphQL Server
-       ↓ (Industrial data)
-WinCC Unified System
+       ↓ (Raw industrial data)
+DataFusion In-Memory Processing
+       ↓ (Load data into Arrow RecordBatch)
+       ↓ (Execute original SQL on in-memory data)
+PostgreSQL Wire Protocol Response
+       ↓ (Formatted results)
+PostgreSQL Client
 ```
+
+### Data Flow Explanation
+
+1. **PostgreSQL Client** sends SQL queries using the standard PostgreSQL wire protocol
+2. **PostgreSQL Wire Protocol Server** handles authentication and connection management  
+3. **SQL Query Handler** uses DataFusion's sqlparser to parse all incoming SQL queries
+4. **Query Translator** extracts filters and parameters from parsed SQL, then converts to GraphQL requests
+5. **WinCC Unified GraphQL Server** returns raw industrial data based on the filters
+6. **DataFusion In-Memory Processing** (for all queries):
+   - Loads raw data into Arrow RecordBatch tables
+   - Executes the original SQL query (with all features: GROUP BY, JOINs, aggregations, etc.)
+   - Returns processed results
+7. **PostgreSQL Wire Protocol Response** formats results and sends back to client
+
+This architecture provides full SQL analytical capabilities on industrial data while maintaining compatibility with standard PostgreSQL clients. **All queries use DataFusion** for consistent SQL feature support.
 
 ## License
 
