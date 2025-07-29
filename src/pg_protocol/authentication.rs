@@ -179,8 +179,8 @@ pub(super) fn scram_sha256_server_first_message(
     let combined_nonce = format!("{}{}", client_nonce, server_nonce);
 
     // Generate random salt
-    let mut rng = rand::thread_rng();
-    let salt: [u8; 16] = rng.gen();
+    let mut rng = rand::rng();
+    let salt: [u8; 16] = rng.random();
     let salt_base64 = STANDARD.encode(salt);
 
     let iteration_count = 4096; // Standard iteration count
@@ -204,8 +204,8 @@ pub(super) fn scram_sha256_server_first_message(
 }
 
 fn generate_scram_server_nonce() -> String {
-    let mut rng = rand::thread_rng();
-    let nonce_bytes: [u8; 18] = rng.gen();
+    let mut rng = rand::rng();
+    let nonce_bytes: [u8; 18] = rng.random();
     STANDARD.encode(nonce_bytes)
 }
 
