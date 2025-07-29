@@ -102,6 +102,7 @@ The server acts as a translation layer with DataFusion integration:
 - **SQL parsing uses DataFusion's sqlparser** (same parser used for DataFusion execution)
 - All GraphQL communication goes through `src/graphql/client.rs`
 - DataFusion integration via `src/datafusion_handler.rs` for complex queries
+- **Session management with automatic extension** - Sessions are automatically extended every 10 minutes to prevent expiration
 - Debug logging uses emoji indicators (🚀 startup, 📨 incoming, 📤 outgoing, etc.)
 - Supports Extended Query Protocol for prepared statements
 - Virtual tables defined in `create_table_function()` in `tables.rs`
