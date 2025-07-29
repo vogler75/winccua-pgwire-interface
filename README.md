@@ -54,6 +54,63 @@ SELECT * FROM tagvalues WHERE tag_name = 'HMI_Tag_1';
 SELECT name, priority FROM activealarms WHERE priority >= 10;
 ```
 
+## TLS/SSL Encryption
+
+The server supports TLS encryption for secure connections.
+
+### Generate TLS Certificates
+
+**Quick Setup (Development Only)**:
+```bash
+# Run the auto-generation script
+./generate_certs.sh
+
+# Or generate manually:
+# 1. Generate private key
+openssl genrsa -out server.key 2048
+
+# 2. Generate self-signed certificate (valid for 365 days)
+openssl req -new -x509 -key server.key -out server.crt -days 365 \
+  -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+
+# 3. Optional: Create CA certificate for client cert testing
+openssl genrsa -out ca.key 2048
+openssl req -new -x509 -key ca.key -out ca.crt -days 365 \
+  -subj "/C=US/ST=State/L=City/O=Organization/CN=TestCA"
+```
+
+### TLS Server Usage
+
+```bash
+# Basic TLS setup
+cargo run -- --graphql-url "http://your-wincc-server/graphql" \
+  --bind-addr 127.0.0.1:5432 \
+  --tls-enabled \
+  --tls-cert server.crt \
+  --tls-key server.key
+
+# TLS with client certificate verification
+cargo run -- --graphql-url "http://your-wincc-server/graphql" \
+  --bind-addr 127.0.0.1:5432 \
+  --tls-enabled \
+  --tls-cert server.crt \
+  --tls-key server.key \
+  --tls-ca-cert ca.crt \
+  --tls-require-client-cert
+```
+
+### TLS Client Connection
+
+```bash
+# Connect with TLS (may need to skip certificate verification for self-signed certs)
+psql "host=localhost port=5432 dbname=winccua user=testuser sslmode=require"
+
+# Connection string format
+postgresql://testuser:password@localhost:5432/winccua?sslmode=require
+```
+
+**Note**: For production use, obtain certificates from a trusted Certificate Authority. Self-signed certificates are only suitable for development and testing.
+
 #### Debug Mode and Testing
 
 ```bash
@@ -248,6 +305,11 @@ Options:
   --bind-addr <BIND_ADDR>        Address to bind the server [default: 127.0.0.1:5432]
   --graphql-url <GRAPHQL_URL>    GraphQL server URL (required)
   --debug                        Enable debug logging
+  --tls-enabled                  Enable TLS/SSL support
+  --tls-cert <TLS_CERT>          Path to TLS certificate file (PEM format)
+  --tls-key <TLS_KEY>            Path to TLS private key file (PEM format)
+  --tls-ca-cert <TLS_CA_CERT>    Path to CA certificate for client verification (optional)
+  --tls-require-client-cert      Require client certificates for authentication
   -h, --help                     Print help
 ```
 
@@ -255,8 +317,8 @@ Options:
 
 - `RUST_LOG` - Logging level (debug, info, warn, error) - for detailed Rust internal logging
 
-📋 **Future Enhancements:**
-- SSL/TLS support
+📋 **Features:**
+- ✅ SSL/TLS encryption support with optional client certificate verification
 
 ## Architecture
 

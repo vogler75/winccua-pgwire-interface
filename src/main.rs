@@ -11,6 +11,7 @@ mod pg_protocol;
 mod query_handler;
 mod sql_handler;
 mod tables;
+mod tls;
 
 #[derive(Parser, Debug)]
 #[command(name = "winccua-pgwire-protocol")]
@@ -31,6 +32,26 @@ pub struct Args {
     /// Use PostgreSQL wire protocol (default) instead of simple TCP protocol
     #[arg(long, default_value_t = true)]
     pub pgwire: bool,
+
+    /// Enable TLS/SSL support
+    #[arg(long)]
+    pub tls_enabled: bool,
+
+    /// Path to TLS certificate file (PEM format)
+    #[arg(long)]
+    pub tls_cert: Option<String>,
+
+    /// Path to TLS private key file (PEM format)
+    #[arg(long)]
+    pub tls_key: Option<String>,
+
+    /// Path to CA certificate file for client certificate verification (optional)
+    #[arg(long)]
+    pub tls_ca_cert: Option<String>,
+
+    /// Require client certificates for authentication
+    #[arg(long)]
+    pub tls_require_client_cert: bool,
 }
 
 #[tokio::main]
@@ -76,10 +97,39 @@ async fn main() -> Result<()> {
     }
 
 
+    // Setup TLS configuration if enabled
+    let tls_config = if args.tls_enabled {
+        let cert_path = args.tls_cert.ok_or_else(|| {
+            anyhow::anyhow!("TLS certificate path (--tls-cert) is required when TLS is enabled")
+        })?;
+        let key_path = args.tls_key.ok_or_else(|| {
+            anyhow::anyhow!("TLS private key path (--tls-key) is required when TLS is enabled")
+        })?;
+
+        let mut config = crate::tls::TlsConfig::new(cert_path, key_path);
+        
+        if let Some(ca_cert) = args.tls_ca_cert {
+            config = config.with_ca_cert(ca_cert);
+        }
+        
+        if args.tls_require_client_cert {
+            config = config.require_client_cert(true);
+        }
+        
+        Some(config)
+    } else {
+        None
+    };
+
     // For now, always use the simple server with improved PostgreSQL compatibility
     // The pgwire library API is too complex and has changed significantly
-    info!("🐘 Starting PostgreSQL-compatible server (enhanced simple protocol)");
-    let server = pg_protocol::PgProtocolServer::new(graphql_url);
+    if tls_config.is_some() {
+        info!("🐘🔒 Starting PostgreSQL-compatible server with TLS support");
+    } else {
+        info!("🐘 Starting PostgreSQL-compatible server (enhanced simple protocol)");
+    }
+    
+    let server = pg_protocol::PgProtocolServer::new(graphql_url, tls_config);
     server.start(args.bind_addr).await?;
 
     Ok(())

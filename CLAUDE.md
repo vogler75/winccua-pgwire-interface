@@ -18,6 +18,15 @@ cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127
 
 # Run with debug logging
 RUST_LOG=debug cargo run -- --graphql-url http://your-wincc-server:4000/graphql --debug --bind-addr 127.0.0.1:5433
+
+# Run with TLS encryption enabled
+cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
+  --tls-enabled --tls-cert server.crt --tls-key server.key
+
+# Run with TLS and client certificate verification
+cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
+  --tls-enabled --tls-cert server.crt --tls-key server.key \
+  --tls-ca-cert ca.crt --tls-require-client-cert
 ```
 
 ### Testing
@@ -49,10 +58,15 @@ The server acts as a translation layer with DataFusion integration:
 ### Key Components
 
 **Protocol Layer** (`/src/pg_protocol/`):
-- `connection_handler.rs` - Manages client connections and protocol state machine
+- `connection_handler.rs` - Manages client connections and protocol state machine, including TLS negotiation
 - `message_handler.rs` - Parses incoming PostgreSQL protocol messages
-- `startup.rs` - Handles connection startup and authentication
+- `startup.rs` - Handles connection startup and authentication (supports both plain and TLS streams)
 - `authentication.rs` - Implements MD5 and SCRAM-SHA-256 auth methods
+
+**TLS Support** (`/src/tls.rs`):
+- TLS certificate loading and server configuration
+- Client certificate verification (optional)
+- Self-signed certificate generation utilities
 
 **Query Translation** (`/src/query_handler/`):
 - Each virtual table has its own handler (e.g., `tag_values_handler.rs`)
@@ -95,7 +109,7 @@ The server acts as a translation layer with DataFusion integration:
 
 ## Important Notes
 
-- SSL/TLS not yet implemented (returns 'N' during negotiation)
+- **TLS/SSL support implemented** - Use `--tls-enabled` with certificate files to enable encryption
 - GraphQL endpoint must be provided via --graphql-url command line argument
 - All timestamp comparisons use ISO 8601 format
 - LIKE patterns support % and _ wildcards

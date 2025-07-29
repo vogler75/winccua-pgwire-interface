@@ -6,6 +6,7 @@ pub(crate) mod response;
 mod startup;
 
 use crate::auth::SessionManager;
+use crate::tls::TlsConfig;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -66,18 +67,28 @@ pub(super) struct ScramSha256Context {
 
 pub struct PgProtocolServer {
     session_manager: Arc<SessionManager>,
+    tls_config: Option<TlsConfig>,
 }
 
 impl PgProtocolServer {
-    pub fn new(graphql_url: String) -> Self {
+    pub fn new(graphql_url: String, tls_config: Option<TlsConfig>) -> Self {
         Self {
             session_manager: Arc::new(SessionManager::new(graphql_url)),
+            tls_config,
         }
     }
 
     pub async fn start(&self, addr: SocketAddr) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
         info!("PostgreSQL-like server listening on {}", addr);
+
+        // Create TLS acceptor if TLS is configured
+        let tls_acceptor = if let Some(ref tls_config) = self.tls_config {
+            let server_config = crate::tls::create_server_config(tls_config)?;
+            Some(tokio_rustls::TlsAcceptor::from(server_config))
+        } else {
+            None
+        };
 
         loop {
             debug!("🎧 Waiting for new connections...");
@@ -86,12 +97,16 @@ impl PgProtocolServer {
             info!("🌟 Accepted new connection from {}", client_addr);
 
             let session_manager = self.session_manager.clone();
+            let tls_acceptor = tls_acceptor.clone();
+            
             tokio::spawn(async move {
                 debug!("🚀 Starting connection handler for {}", client_addr);
 
-                if let Err(e) =
-                    connection_handler::handle_connection(socket, session_manager)
-                        .await
+                if let Err(e) = connection_handler::handle_connection(
+                    socket, 
+                    session_manager, 
+                    tls_acceptor
+                ).await
                 {
                     error!("💥 Error handling connection from {}: {}", client_addr, e);
                 } else {

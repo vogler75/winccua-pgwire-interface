@@ -1,7 +1,7 @@
 use crate::auth::SessionManager;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 use anyhow::Result;
@@ -12,11 +12,23 @@ use super::response::{create_postgres_auth_ok_response, create_postgres_error_re
 use super::{ConnectionState, ScramStage};
 
 pub(super) async fn handle_postgres_startup(
-    mut socket: TcpStream,
+    socket: TcpStream,
     session_manager: Arc<SessionManager>,
     data: &[u8],
 ) -> Result<()> {
-    let peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
+    let _peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
+    handle_postgres_startup_stream(socket, session_manager, data).await
+}
+
+pub(super) async fn handle_postgres_startup_stream<T>(
+    mut socket: T,
+    session_manager: Arc<SessionManager>,
+    data: &[u8],
+) -> Result<()> 
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    let peer_addr = "client"; // Generic identifier since we can't always get peer_addr
     info!("🐘 Handling PostgreSQL startup from {}", peer_addr);
 
     if data.len() < 8 {
@@ -29,7 +41,7 @@ pub(super) async fn handle_postgres_startup(
     }
 
     // Ensure we have the complete message
-    let complete_data = match read_complete_postgres_message(&mut socket, data).await {
+    let complete_data = match read_complete_postgres_message_stream(&mut socket, data).await {
         Ok(data) => data,
         Err(e) => {
             error!(
@@ -707,10 +719,13 @@ fn parse_startup_parameters(data: &[u8]) -> std::collections::HashMap<String, St
     params
 }
 
-async fn read_complete_postgres_message(
-    socket: &mut TcpStream,
+async fn read_complete_postgres_message_stream<T>(
+    socket: &mut T,
     initial_data: &[u8],
-) -> Result<Vec<u8>> {
+) -> Result<Vec<u8>>
+where
+    T: AsyncRead + Unpin,
+{
     if initial_data.len() < 4 {
         return Err(anyhow::anyhow!("Not enough data for message length"));
     }

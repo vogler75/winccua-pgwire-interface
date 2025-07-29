@@ -1,8 +1,9 @@
 use crate::auth::SessionManager;
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, trace, warn};
 
 use super::startup::handle_postgres_startup;
@@ -10,6 +11,7 @@ use super::startup::handle_postgres_startup;
 pub(super) async fn handle_connection(
     mut socket: TcpStream,
     session_manager: Arc<SessionManager>,
+    tls_acceptor: Option<TlsAcceptor>,
 ) -> Result<()> {
     let peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
     info!("🔌 New connection established from {}", peer_addr);
@@ -33,49 +35,78 @@ pub(super) async fn handle_connection(
     // Check if this is an SSL request first
     if n >= 8 && is_ssl_request(&peek_buffer[..n]) {
         info!("🔒 SSL connection request detected from {}!", peer_addr);
-        info!("   📌 SSL Status: Not supported by server");
-        info!("   💡 Client should fall back to unencrypted connection");
+        
+        if let Some(acceptor) = tls_acceptor {
+            info!("   📌 SSL Status: Supported by server - upgrading to TLS");
+            
+            // Send SSL supported response ('S')
+            let ssl_response = b"S";
+            if let Err(e) = socket.write_all(ssl_response).await {
+                error!("❌ Failed to send SSL acceptance to {}: {}", peer_addr, e);
+                return Ok(());
+            }
+            
+            debug!("✅ Sent SSL acceptance ('S') to {}", peer_addr);
+            
+            // Perform TLS handshake
+            info!("🤝 Performing TLS handshake with {}", peer_addr);
+            let tls_stream = match acceptor.accept(socket).await {
+                Ok(stream) => {
+                    info!("✅ TLS handshake successful with {}", peer_addr);
+                    stream
+                }
+                Err(e) => {
+                    error!("❌ TLS handshake failed with {}: {}", peer_addr, e);
+                    return Ok(());
+                }
+            };
+            
+            // Now handle the startup message over the encrypted connection
+            return handle_postgres_startup_tls(tls_stream, session_manager).await;
+            
+        } else {
+            info!("   📌 SSL Status: Not supported by server (TLS not configured)");
+            info!("   💡 Client should fall back to unencrypted connection");
 
-        // PostgreSQL SSL response format:
-        // 'N' (0x4E) = SSL not supported
-        // 'S' (0x53) = SSL supported (we don't support this)
-        let ssl_response = b"N";
-        if let Err(e) = socket.write_all(ssl_response).await {
-            error!("❌ Failed to send SSL rejection to {}: {}", peer_addr, e);
-            return Ok(());
+            // Send SSL not supported response ('N')
+            let ssl_response = b"N";
+            if let Err(e) = socket.write_all(ssl_response).await {
+                error!("❌ Failed to send SSL rejection to {}: {}", peer_addr, e);
+                return Ok(());
+            }
+
+            debug!("✅ Sent SSL rejection ('N') to {}", peer_addr);
+
+            // After rejecting SSL, the client should send a normal startup message
+            debug!(
+                "📖 Waiting for startup message after SSL rejection from {}",
+                peer_addr
+            );
+
+            let mut startup_buffer = [0; 1024];
+            let startup_n = socket.read(&mut startup_buffer).await?;
+            if startup_n == 0 {
+                warn!("⚠️  Client {} disconnected after SSL rejection", peer_addr);
+                return Ok(());
+            }
+
+            debug!(
+                "📊 Received {} bytes after SSL rejection from {}",
+                startup_n, peer_addr
+            );
+            trace!(
+                "🔍 Startup message bytes: {:02x?}",
+                &startup_buffer[..startup_n]
+            );
+
+            // Now handle the startup message as a regular PostgreSQL connection
+            return handle_postgres_startup(
+                socket,
+                session_manager,
+                &startup_buffer[..startup_n],
+            )
+            .await;
         }
-
-        debug!("✅ Sent SSL rejection ('N') to {}", peer_addr);
-
-        // After rejecting SSL, the client should send a normal startup message
-        debug!(
-            "📖 Waiting for startup message after SSL rejection from {}",
-            peer_addr
-        );
-
-        let mut startup_buffer = [0; 1024];
-        let startup_n = socket.read(&mut startup_buffer).await?;
-        if startup_n == 0 {
-            warn!("⚠️  Client {} disconnected after SSL rejection", peer_addr);
-            return Ok(());
-        }
-
-        debug!(
-            "📊 Received {} bytes after SSL rejection from {}",
-            startup_n, peer_addr
-        );
-        trace!(
-            "🔍 Startup message bytes: {:02x?}",
-            &startup_buffer[..startup_n]
-        );
-
-        // Now handle the startup message as a regular PostgreSQL connection
-        return handle_postgres_startup(
-            socket,
-            session_manager,
-            &startup_buffer[..startup_n],
-        )
-        .await;
     }
     // Check if this looks like PostgreSQL wire protocol (non-SSL)
     else if n >= 8 && is_postgres_wire_protocol(&peek_buffer[..n]) {
@@ -280,4 +311,35 @@ async fn handle_simple_text_protocol(
 
     info!("🔌 Connection with {} ended", peer_addr);
     Ok(())
+}
+
+async fn handle_postgres_startup_tls<T>(
+    mut stream: T,
+    session_manager: Arc<SessionManager>,
+) -> Result<()> 
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    let _peer_addr = "TLS-encrypted".to_string(); // We can't get peer_addr from TLS stream easily
+    info!("🔒 Handling encrypted PostgreSQL startup");
+
+    // Read the startup message over TLS
+    let mut startup_buffer = [0; 1024];
+    let startup_n = stream.read(&mut startup_buffer).await?;
+    if startup_n == 0 {
+        warn!("⚠️  TLS client disconnected during startup");
+        return Ok(());
+    }
+
+    debug!("📊 Received {} bytes over TLS", startup_n);
+    trace!("🔍 TLS startup message bytes: {:02x?}", &startup_buffer[..startup_n]);
+
+    // Convert the TLS stream to work with our existing startup handler
+    // We need to create a wrapper that can work with our existing code
+    return super::startup::handle_postgres_startup_stream(
+        stream,
+        session_manager,
+        &startup_buffer[..startup_n],
+    )
+    .await;
 }

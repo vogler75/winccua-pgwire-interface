@@ -21,3 +21,17 @@ target
 #.idea/
 
 .DS_Store
+
+# TLS/SSL Certificate files
+*.crt
+*.key
+*.csr
+*.p12
+*.pem
+ca.*
+server.*
+client.*
+
+# Certificate directories
+certs/
+test_certs/
