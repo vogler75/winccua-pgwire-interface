@@ -95,6 +95,19 @@ async fn handle_simple_query_message(
         .map_err(|_| anyhow!("Invalid UTF-8 in query"))?
         .trim_end_matches('\0');
 
+    // Handle empty queries - PostgreSQL returns CommandComplete with empty tag for empty queries
+    if query_str.trim().is_empty() {
+        debug!("📥 Empty simple query received, returning CommandComplete");
+        let mut response = Vec::new();
+        
+        // Send CommandComplete with empty tag
+        response.extend_from_slice(&super::response::create_command_complete_response(""));
+        // Send ReadyForQuery
+        response.extend_from_slice(&super::response::create_ready_for_query_response());
+        
+        return Ok(response);
+    }
+
     if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
         info!("📥 SQL Query: {}", query_str.trim().replace('\n', " ").replace('\r', ""));
     } else {
@@ -137,6 +150,21 @@ async fn handle_parse_message(
 
     // Extract query string (null-terminated string)
     let query = extract_null_terminated_string(payload, &mut pos)?;
+    
+    // Handle empty queries - PostgreSQL expects a ParseComplete response for empty queries
+    if query.trim().is_empty() {
+        debug!("📋 Parse: received empty query, returning ParseComplete");
+        let prepared_stmt = PreparedStatement {
+            name: statement_name.clone(),
+            query: query.clone(),
+            parameter_types: Vec::new(),
+        };
+        connection_state
+            .prepared_statements
+            .insert(statement_name, prepared_stmt);
+        
+        return Ok(create_parse_complete_response());
+    }
 
     // Extract parameter count
     if pos + 2 > payload.len() {
@@ -354,6 +382,17 @@ async fn handle_execute_message(
 
     // Substitute parameters in the query
     let final_query = substitute_parameters(&statement.query, &portal.parameters)?;
+
+    // Handle empty queries in extended query protocol
+    if final_query.trim().is_empty() {
+        debug!("🔍 Empty extended query received, returning CommandComplete");
+        let mut response = Vec::new();
+        
+        // Send CommandComplete with empty tag
+        response.extend_from_slice(&super::response::create_command_complete_response(""));
+        
+        return Ok(response);
+    }
 
     debug!("🔍 Executing parameterized query: {}", final_query.trim());
 
