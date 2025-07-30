@@ -101,26 +101,16 @@ async fn handle_simple_query_message(
         debug!("📥 SQL Query: {}", query_str.trim().replace('\n', " ").replace('\r', ""));
     }
 
-    // Start query tracking with timing
-    let query_start = std::time::Instant::now();
+    // Start query tracking
     if let Some(conn_id) = connection_id {
         session_manager.start_query(conn_id, query_str).await;
     }
 
     let result = match super::query_execution::handle_simple_query_with_connection(query_str, session, session_manager.clone(), connection_id).await {
         Ok(response) => {
-            // Capture overall timing and extract component timings from logs
-            let overall_time_ms = query_start.elapsed().as_millis() as u64;
-            
             if let Some(conn_id) = connection_id {
                 // End query tracking - overall time will be calculated automatically
                 session_manager.end_query(conn_id).await;
-                
-                if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
-                    info!("🕐 Query completed in {}ms for connection {}", overall_time_ms, conn_id);
-                } else {
-                    debug!("🕐 Query completed in {}ms for connection {}", overall_time_ms, conn_id);
-                }
             }
             Ok(response)
         },
