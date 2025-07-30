@@ -15,7 +15,7 @@ impl QueryHandler {
 
         // Get tag names - handle LIKE patterns via browse if needed
         let tag_names = if query_info.requires_browse() {
-            info!("🔍 LoggedTagValues query contains LIKE patterns, using browse to resolve tag names");
+            debug!("🔍 LoggedTagValues query contains LIKE patterns, using browse to resolve tag names");
             Self::resolve_like_patterns(&query_info, session).await?
         } else {
             let tag_names = query_info.get_tag_names();
@@ -110,7 +110,7 @@ impl QueryHandler {
             }
         }
 
-        info!("🚀 GraphQL query for LoggedTagValues completed in {} ms, fetched {} rows", graphql_elapsed_ms, all_values.len());
+        debug!("🚀 GraphQL query for LoggedTagValues completed in {} ms, fetched {} rows", graphql_elapsed_ms, all_values.len());
 
         // Apply additional filters and sorting
         let filtered_results = Self::apply_logged_filters(all_values, &query_info.filters)?;

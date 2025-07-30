@@ -3,7 +3,7 @@ use crate::query_handler::QueryHandler;
 use crate::tables::{ColumnFilter, FilterOperator, QueryInfo};
 use anyhow::Result;
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug};
 
 impl QueryHandler {
     pub(super) async fn resolve_like_patterns(
@@ -59,12 +59,7 @@ impl QueryHandler {
                 }
             };
             let graphql_elapsed_ms = graphql_start.elapsed().as_millis();
-            info!("🚀 GraphQL browse for LIKE pattern '{}' completed in {} ms", pattern, graphql_elapsed_ms);
-            debug!(
-                "📋 Browse returned {} tags for pattern '{}'",
-                browse_results.len(),
-                browse_pattern
-            );
+            debug!("📋 GraphQL browse for LIKE pattern '{}' completed in {} ms returned {} tags", pattern, graphql_elapsed_ms, browse_results.len());
 
             // Extract just the names from BrowseResult
             let tag_names: Vec<String> = browse_results.into_iter().map(|br| br.name).collect();

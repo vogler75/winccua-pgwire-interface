@@ -94,7 +94,7 @@ async fn handle_simple_query_message(
         .map_err(|_| anyhow!("Invalid UTF-8 in query"))?
         .trim_end_matches('\0');
 
-    info!("📥 SQL Query: {}", query_str.trim().replace('\n', "").replace('\r', ""));
+    info!("📥 SQL Query: {}", query_str.trim().replace('\n', " ").replace('\r', ""));
 
     // Start query tracking with timing
     let query_start = std::time::Instant::now();

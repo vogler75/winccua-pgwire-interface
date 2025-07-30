@@ -75,14 +75,14 @@ where
 
     // Hex dump of the entire startup message
     let hex_dump = hex::encode(&complete_data);
-    info!("   🔍 Hex dump (full message): {}", hex_dump);
+    debug!("   🔍 Hex dump (full message): {}", hex_dump);
 
     // ASCII interpretation (printable characters only)
     let ascii_dump: String = complete_data
         .iter()
         .map(|&b| if b >= 32 && b <= 126 { b as char } else { '.' })
         .collect();
-    info!("   📝 ASCII dump: {}", ascii_dump);
+    debug!("   📝 ASCII dump: {}", ascii_dump);
 
     // Parse startup parameters if this is a v3.0 protocol message
     if version == 196608 {

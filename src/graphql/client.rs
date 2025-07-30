@@ -92,9 +92,7 @@ impl GraphQLClient {
 
         debug!("Session data: {:?}", session);
 
-        if let Some(error) = &session.error {
-            debug!("Session contains error field: {:?}", error);
-            
+        if let Some(error) = &session.error {           
             // Check if the error code indicates failure (non-zero)
             let error_code = error.code.as_deref().unwrap_or("1"); // Default to "1" (failure) if no code
             debug!("Error code: '{}' (success if '0')", error_code);
@@ -106,11 +104,15 @@ impl GraphQLClient {
                 return Err(anyhow!("Login failed (code {}): {} - {}", error_code, description, message));
             }
             // If code is "0", this is actually a success despite being in the error field
-            info!("Login successful with code 0, description: {:?}", error.description);
+            debug!("Login successful with code 0, description: {:?}", error.description);
+            Ok(session)
         }
-
-        info!("Successfully logged in user: {}", username);
-        Ok(session)
+        else 
+        {
+            // Error field is None, which is unexpected, not logged on!
+            error!("Login response did not contain expected data!");
+            return Err(anyhow!("Login response did not contain expected data!"));
+        }
     }
 
     pub async fn get_tag_values(&self, token: &str, names: Vec<String>, direct_read: bool) -> Result<Vec<TagValueResult>> {

@@ -145,7 +145,7 @@ impl SessionManager {
             self.start_session_extension_task().await;
         }
         
-        info!("User {} authenticated successfully with session {}", username, auth_session.session_id);
+        debug!("User {} authenticated successfully with session {}", username, auth_session.session_id);
         Ok(auth_session)
     }
 
