@@ -150,7 +150,7 @@ impl SqlHandler {
     fn extract_columns(select: &Select, table: &VirtualTable) -> Result<(Vec<String>, std::collections::HashMap<String, String>)> {
         let mut columns = Vec::new();
         let mut column_mappings = std::collections::HashMap::new();
-        let is_datafusion_table = matches!(table, VirtualTable::TagValues | VirtualTable::TagList | VirtualTable::LoggedTagValues | VirtualTable::ActiveAlarms | VirtualTable::LoggedAlarms);
+        let is_datafusion_table = matches!(table, VirtualTable::TagValues | VirtualTable::TagList | VirtualTable::LoggedTagValues | VirtualTable::ActiveAlarms | VirtualTable::LoggedAlarms | VirtualTable::PgStatActivity);
 
         for item in &select.projection {
             match item {

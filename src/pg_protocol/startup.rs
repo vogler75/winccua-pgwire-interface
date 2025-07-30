@@ -1,5 +1,6 @@
 use crate::auth::SessionManager;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -15,26 +16,30 @@ pub(super) async fn handle_postgres_startup(
     socket: TcpStream,
     session_manager: Arc<SessionManager>,
     data: &[u8],
+    peer_addr: SocketAddr,
 ) -> Result<()> {
-    let _peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
-    handle_postgres_startup_stream(socket, session_manager, data).await
+    handle_postgres_startup_stream(socket, session_manager, data, Some(peer_addr)).await
 }
 
 pub(super) async fn handle_postgres_startup_stream<T>(
     mut socket: T,
     session_manager: Arc<SessionManager>,
     data: &[u8],
+    socket_addr: Option<SocketAddr>,
 ) -> Result<()> 
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
-    let peer_addr = "client"; // Generic identifier since we can't always get peer_addr
-    info!("🐘 Handling PostgreSQL startup from {}", peer_addr);
+    let peer_addr_str = socket_addr.map(|a| a.to_string()).unwrap_or_else(|| "client".to_string());
+    info!("🐘 Handling PostgreSQL startup from {}", peer_addr_str);
+
+    // Initialize connection_id at function level
+    let mut connection_id: Option<u32> = None;
 
     if data.len() < 8 {
         error!(
             "❌ Invalid startup message length from {}: {} bytes",
-            peer_addr,
+            peer_addr_str,
             data.len()
         );
         return Ok(());
@@ -46,7 +51,7 @@ where
         Err(e) => {
             error!(
                 "❌ Failed to read complete startup message from {}: {}",
-                peer_addr, e
+                peer_addr_str, e
             );
             return Ok(());
         }
@@ -63,7 +68,7 @@ where
     );
 
     // Dump full startup message for debugging
-    info!("🔍 Full startup message dump from {}:", peer_addr);
+    info!("🔍 Full startup message dump from {}:", peer_addr_str);
     info!("   📏 Total length: {} bytes", complete_data.len());
     info!("   📊 Message length field: {} bytes", length);
     info!("   🔢 Protocol version: {} (0x{:08x})", version, version);
@@ -95,7 +100,7 @@ where
         if complete_data.len() > 8 {
             let params_data = &complete_data[8..];
             let params = parse_startup_parameters(params_data);
-            info!("📋 Client connection parameters from {}:", peer_addr);
+            info!("📋 Client connection parameters from {}:", peer_addr_str);
             for (key, value) in &params {
                 match key.as_str() {
                     "user" => info!("   👤 User: {}", value),
@@ -121,8 +126,8 @@ where
             }
         }
 
-        // Extract username from startup parameters for authentication
-        let username = if complete_data.len() > 8 {
+        // Extract username and application_name from startup parameters for authentication
+        let (username, application_name) = if complete_data.len() > 8 {
             let params_data = &complete_data[8..];
             let params = parse_startup_parameters(params_data);
             debug!("🔍 All startup parameters: {:?}", params);
@@ -130,7 +135,7 @@ where
             let user = params.get("user").cloned().unwrap_or_else(|| {
                 error!(
                     "❌ No 'user' parameter found in startup message from {}",
-                    peer_addr
+                    peer_addr_str
                 );
                 error!(
                     "🔍 Available parameters: {:?}",
@@ -148,19 +153,20 @@ where
                 error!("💡 Check client configuration - ensure username is specified");
             }
 
-            user
+            let app_name = params.get("application_name").cloned().unwrap_or_else(|| "unknown".to_string());
+            (user, app_name)
         } else {
             warn!(
                 "⚠️  Startup message too short from {}: {} bytes",
-                peer_addr,
+                peer_addr_str,
                 data.len()
             );
-            "unknown".to_string()
+            ("unknown".to_string(), "unknown".to_string())
         };
 
         info!(
             "🔐 PostgreSQL client {} requesting authentication for user: {}",
-            peer_addr, username
+            peer_addr_str, username
         );
 
 
@@ -193,29 +199,29 @@ where
             (auth_request, AuthContext::Md5(salt))
         };
 
-        debug!("📤 Sending password authentication request to {}", peer_addr);
+        debug!("📤 Sending password authentication request to {}", peer_addr_str);
         if let Err(e) = socket.write_all(&auth_request).await {
-            error!("❌ Failed to send auth request to {}: {}", peer_addr, e);
+            error!("❌ Failed to send auth request to {}: {}", peer_addr_str, e);
             return Ok(());
         }
 
         // Wait for authentication response (SASL or password)
         if matches!(auth_context, AuthContext::Scram) {
-            debug!("📖 Waiting for SASL Initial Response from {}", peer_addr);
+            debug!("📖 Waiting for SASL Initial Response from {}", peer_addr_str);
         } else {
-            debug!("📖 Waiting for password response from {}", peer_addr);
+            debug!("📖 Waiting for password response from {}", peer_addr_str);
         }
 
         let mut auth_buffer = [0; 1024];
         let auth_n = socket.read(&mut auth_buffer).await?;
         if auth_n == 0 {
-            warn!("⚠️  Client {} disconnected during authentication", peer_addr);
+            warn!("⚠️  Client {} disconnected during authentication", peer_addr_str);
             return Ok(());
         }
 
         debug!(
             "📊 Received {} bytes authentication response from {}",
-            auth_n, peer_addr
+            auth_n, peer_addr_str
         );
 
         // Handle authentication based on the context
@@ -240,14 +246,14 @@ where
                                 if password_n == 0 {
                                     warn!(
                                         "⚠️  Client {} disconnected during MD5 fallback",
-                                        peer_addr
+                                        peer_addr_str
                                     );
                                     return Ok(());
                                 }
 
                                 let password = parse_postgres_password(&password_buffer[..password_n]);
                                 if password.is_none() {
-                                    error!("❌ Invalid password format during MD5 fallback from {}", peer_addr);
+                                    error!("❌ Invalid password format during MD5 fallback from {}", peer_addr_str);
                                     let error_response = create_postgres_error_response("28P01", "Invalid password format");
                                     socket.write_all(&error_response).await?;
                                     return Ok(());
@@ -255,7 +261,7 @@ where
                                 (username.clone(), password.unwrap())
                             } else {
                                 // Implement SCRAM-SHA-256 protocol
-                                info!("🔐 Starting SCRAM-SHA-256 authentication for client {}", peer_addr);
+                                info!("🔐 Starting SCRAM-SHA-256 authentication for client {}", peer_addr_str);
                                 debug!("📨 SCRAM Initial Response: {}", initial_response);
 
                                 // Parse client-first message
@@ -263,7 +269,7 @@ where
                                     match parse_scram_client_first(&initial_response) {
                                         Ok((u, n)) => (u, n),
                                         Err(e) => {
-                                            error!("❌ Failed to parse SCRAM client-first from {}: {}", peer_addr, e);
+                                            error!("❌ Failed to parse SCRAM client-first from {}: {}", peer_addr_str, e);
                                             let error_response = create_postgres_error_response("28P01", &format!("Invalid SCRAM client-first: {}", e));
                                             socket.write_all(&error_response).await?;
                                             return Ok(());
@@ -300,14 +306,14 @@ where
                                 if client_final_n == 0 {
                                     warn!(
                                         "⚠️  Client {} disconnected during SCRAM client-final",
-                                        peer_addr
+                                        peer_addr_str
                                     );
                                     return Ok(());
                                 }
 
                                 debug!(
                                     "📊 Received {} bytes SCRAM client-final from {}",
-                                    client_final_n, peer_addr
+                                    client_final_n, peer_addr_str
                                 );
 
                                 // Parse SASL Response (client-final)
@@ -316,7 +322,7 @@ where
                                     {
                                         Ok(data) => data,
                                         Err(e) => {
-                                            error!("❌ Failed to parse SCRAM client-final from {}: {}", peer_addr, e);
+                                            error!("❌ Failed to parse SCRAM client-final from {}: {}", peer_addr_str, e);
                                             let error_response = create_postgres_error_response("28P01", &format!("Invalid SCRAM client-final: {}", e));
                                             socket.write_all(&error_response).await?;
                                             return Ok(());
@@ -330,7 +336,7 @@ where
                                     match parse_scram_client_final(&client_final_data) {
                                         Ok((cf, cp)) => (cf, cp),
                                         Err(e) => {
-                                            error!("❌ Failed to parse SCRAM client-final content from {}: {}", peer_addr, e);
+                                            error!("❌ Failed to parse SCRAM client-final content from {}: {}", peer_addr_str, e);
                                             let error_response = create_postgres_error_response("28P01", &format!("Invalid SCRAM client-final format: {}", e));
                                             socket.write_all(&error_response).await?;
                                             return Ok(());
@@ -377,7 +383,7 @@ where
                                         (scram_username, known_password.to_string())
                                     }
                                     Err(e) => {
-                                        error!("❌ SCRAM-SHA-256 verification failed for user '{}' from {}: {}", scram_username, peer_addr, e);
+                                        error!("❌ SCRAM-SHA-256 verification failed for user '{}' from {}: {}", scram_username, peer_addr_str, e);
                                         let error_response = create_postgres_error_response(
                                             "28P01",
                                             "Authentication failed",
@@ -391,7 +397,7 @@ where
                         Err(e) => {
                             error!(
                                 "❌ Failed to parse SASL Initial Response from {}: {}",
-                                peer_addr, e
+                                peer_addr_str, e
                             );
                             error!(
                                 "🔍 SASL message hex dump: {}",
@@ -408,7 +414,7 @@ where
                 } else {
                     error!(
                         "❌ Expected SASL Initial Response from SCRAM client {}",
-                        peer_addr
+                        peer_addr_str
                     );
                     error!(
                         "🔍 Received message hex dump: {}",
@@ -426,7 +432,7 @@ where
                 // Parse password from response (handles both cleartext and MD5)
                 let password = parse_postgres_password(&auth_buffer[..auth_n]);
                 if password.is_none() {
-                    error!("❌ Invalid password format from {}", peer_addr);
+                    error!("❌ Invalid password format from {}", peer_addr_str);
                     error!(
                         "🔍 Password message hex dump: {}",
                         hex::encode(&auth_buffer[..auth_n.min(64)])
@@ -448,12 +454,12 @@ where
 
         info!(
             "🔑 Authenticating user '{}' from {} via GraphQL",
-            username_final, peer_addr
+            username_final, peer_addr_str
         );
 
         // Handle MD5 authentication
         let (is_md5_valid, actual_password) = if password_final.starts_with("md5") {
-            info!("🔐 Received MD5 password response from {}", peer_addr);
+            info!("🔐 Received MD5 password response from {}", peer_addr_str);
             debug!("🔍 MD5 response: {}", password_final);
 
             // For MD5 verification, we need to know the original password
@@ -505,14 +511,14 @@ where
                 (is_valid, known_password.to_string())
             }
         } else {
-            info!("🔐 Received cleartext password from {}", peer_addr);
+            info!("🔐 Received cleartext password from {}", peer_addr_str);
             (true, password_final)
         };
 
         if !is_md5_valid {
             error!(
                 "❌ Authentication failed for user '{}' from {}",
-                username_final, peer_addr
+                username_final, peer_addr_str
             );
             let error_response =
                 create_postgres_error_response("28P01", "MD5 authentication failed");
@@ -526,14 +532,14 @@ where
                 Ok(session) => {
                     info!(
                         "✅ Authentication successful for user '{}' from {}",
-                        username_final, peer_addr
+                        username_final, peer_addr_str
                     );
 
                     // Send authentication OK response
                     let auth_ok_response = create_postgres_auth_ok_response();
-                    debug!("📤 Sending authentication OK to {}", peer_addr);
+                    debug!("📤 Sending authentication OK to {}", peer_addr_str);
                     if let Err(e) = socket.write_all(&auth_ok_response).await {
-                        error!("❌ Failed to send auth OK to {}: {}", peer_addr, e);
+                        error!("❌ Failed to send auth OK to {}: {}", peer_addr_str, e);
                         return Ok(());
                     }
 
@@ -542,7 +548,7 @@ where
                 Err(e) => {
                     error!(
                         "❌ Authentication failed for user '{}' from {}: {}",
-                        username_final, peer_addr, e
+                        username_final, peer_addr_str, e
                     );
                     let error_response = create_postgres_error_response(
                         "28P01",
@@ -553,29 +559,46 @@ where
                 }
             };
 
+        // Register the connection after successful authentication
+        connection_id = if let Some(addr) = socket_addr {
+            match session_manager.register_connection(
+                &authenticated_session.session_id,
+                addr,
+                application_name.clone(),
+            ).await {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    error!("❌ Failed to register connection: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Main query processing loop
-        info!("🔄 Starting PostgreSQL query loop for {}", peer_addr);
+        info!("🔄 Starting PostgreSQL query loop for {}", peer_addr_str);
         let mut buffer = vec![0; 4096];
 
         loop {
-            debug!("📖 Waiting for PostgreSQL query from {}", peer_addr);
+            debug!("📖 Waiting for PostgreSQL query from {}", peer_addr_str);
 
             let n = socket.read(&mut buffer).await?;
             if n == 0 {
-                info!("🔌 PostgreSQL connection closed by client {}", peer_addr);
+                info!("🔌 PostgreSQL connection closed by client {}", peer_addr_str);
                 break;
             }
 
             debug!(
                 "📊 Received {} bytes from PostgreSQL client {}",
-                n, peer_addr
+                n, peer_addr_str
             );
 
             let mut pos = 0;
             let mut response_buffer = Vec::new();
             
             // Log all incoming messages in this batch
-            debug!("📨 Processing batch of {} bytes from {}", n, peer_addr);
+            debug!("📨 Processing batch of {} bytes from {}", n, peer_addr_str);
             let mut temp_pos = 0;
             while temp_pos < n && temp_pos + 5 <= n {
                 let msg_type = buffer[temp_pos] as char;
@@ -617,6 +640,8 @@ where
                     &message_slice[..total_message_len],
                     &mut connection_state,
                     &authenticated_session,
+                    session_manager.clone(),
+                    connection_id,
                 )
                 .await
                 {
@@ -631,10 +656,14 @@ where
                     }
                     Err(e) => {
                         if e.to_string() == "TERMINATE_CONNECTION" {
-                            info!("👋 Client {} requested connection termination", peer_addr);
+                            info!("👋 Client {} requested connection termination", peer_addr_str);
+                            // Unregister the connection before returning
+                            if let Some(conn_id) = connection_id {
+                                session_manager.unregister_connection(conn_id).await;
+                            }
                             return Ok(());
                         } else {
-                            error!("❌ Message processing error for {}: {}", peer_addr, e);
+                            error!("❌ Message processing error for {}: {}", peer_addr_str, e);
                             let mut error_response = create_postgres_error_response(
                                 "42000",
                                 &format!("Query failed: {}", e),
@@ -650,7 +679,7 @@ where
             if !response_buffer.is_empty() {
                 debug!(
                     "📤 Sending PostgreSQL response to {} ({} bytes)",
-                    peer_addr,
+                    peer_addr_str,
                     response_buffer.len()
                 );
                 
@@ -670,11 +699,16 @@ where
         );
 
         if let Err(e) = socket.write_all(&error_response).await {
-            error!("❌ Failed to send error response to {}: {}", peer_addr, e);
+            error!("❌ Failed to send error response to {}: {}", peer_addr_str, e);
         }
     }
 
-    info!("🔌 PostgreSQL connection attempt from {} handled", peer_addr);
+    // Unregister the connection if it was registered
+    if let Some(conn_id) = connection_id {
+        session_manager.unregister_connection(conn_id).await;
+    }
+
+    info!("🔌 PostgreSQL connection attempt from {} handled", peer_addr_str);
     Ok(())
 }
 

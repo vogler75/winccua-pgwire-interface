@@ -2,13 +2,14 @@
 pub mod active_alarms_handler;
 pub mod logged_alarms_handler;
 pub mod logged_tag_values_handler;
+pub mod pg_stat_activity_handler;
 pub mod tag_list_handler;
 pub mod tag_values_handler;
 
 mod filter;
 mod util;
 
-use crate::auth::AuthenticatedSession;
+use crate::auth::{AuthenticatedSession, SessionManager};
 use crate::datafusion_handler;
 use crate::sql_handler::SqlHandler;
 use crate::tables::{QueryInfo, SqlResult, VirtualTable};
@@ -30,6 +31,14 @@ pub enum QueryValue {
     Boolean(bool),
 }
 
+/// Represents timing information for a query
+#[derive(Debug, Default)]
+pub struct QueryTimings {
+    pub graphql_time_ms: Option<u64>,
+    pub datafusion_time_ms: Option<u64>,
+    pub overall_time_ms: Option<u64>,
+}
+
 /// Represents the result of a SQL query
 #[derive(Debug)]
 pub struct QueryResult {
@@ -39,6 +48,8 @@ pub struct QueryResult {
     pub column_types: Vec<u32>,
     /// Rows of data
     pub rows: Vec<Vec<QueryValue>>,
+    /// Timing information (if available)
+    pub timings: QueryTimings,
 }
 
 impl QueryResult {
@@ -48,6 +59,7 @@ impl QueryResult {
             columns,
             column_types,
             rows: Vec::new(),
+            timings: QueryTimings::default(),
         }
     }
     
@@ -215,7 +227,13 @@ fn extract_value_from_array(array: &dyn arrow::array::Array, index: usize) -> Re
 pub struct QueryHandler;
 
 impl QueryHandler {
-    pub async fn execute_query(sql: &str, session: &AuthenticatedSession) -> Result<QueryResult> {
+    #[allow(dead_code)]
+    pub async fn execute_query(sql: &str, session: &AuthenticatedSession, session_manager: Arc<SessionManager>) -> Result<QueryResult> {
+        Self::execute_query_with_connection(sql, session, session_manager, None).await
+    }
+
+    pub async fn execute_query_with_connection(sql: &str, session: &AuthenticatedSession, session_manager: Arc<SessionManager>, connection_id: Option<u32>) -> Result<QueryResult> {
+        let query_start = std::time::Instant::now();
         // Parse the SQL query
         let sql_result = match SqlHandler::parse_query(sql) {
             Ok(result) => result,
@@ -233,7 +251,7 @@ impl QueryHandler {
         debug!("📋 Parsed SQL result: {:?}", sql_result);
 
         // Handle based on result type
-        match sql_result {
+        let result = match sql_result {
             SqlResult::Query(query_info) => {
                 // Execute based on table type
                 match query_info.table {
@@ -257,6 +275,12 @@ impl QueryHandler {
                     | VirtualTable::InformationSchemaColumns => {
                         crate::information_schema::handle_information_schema_query(&query_info)
                     }
+                    VirtualTable::PgStatActivity => {
+                        // Use the pg_stat_activity handler with DataFusion
+                        crate::query_handler::pg_stat_activity_handler::handle_pg_stat_activity_query(
+                            sql, session, session_manager.clone()
+                        ).await
+                    }
                     VirtualTable::FromLessQuery => {
                         Self::execute_from_less_query(sql, &query_info, session).await
                     }
@@ -267,7 +291,35 @@ impl QueryHandler {
                 // Return empty result for SET statements
                 Ok(QueryResult::new(vec![], vec![]))
             }
+        };
+
+        // Calculate overall execution time and update connection if provided
+        let overall_time_ms = query_start.elapsed().as_millis() as u64;
+        
+        // Update result with overall timing and extract individual timings
+        let mut final_result = result?;
+        final_result.timings.overall_time_ms = Some(overall_time_ms);
+        
+        if let Some(conn_id) = connection_id {
+            // Update session manager with timing information
+            debug!("🔍 Setting query timings for connection {}: GraphQL={:?}ms, DataFusion={:?}ms, Overall={}ms", 
+                conn_id, final_result.timings.graphql_time_ms, final_result.timings.datafusion_time_ms, overall_time_ms);
+            
+            session_manager.set_all_query_timings(
+                conn_id,
+                final_result.timings.graphql_time_ms,
+                final_result.timings.datafusion_time_ms,
+                Some(overall_time_ms),
+            ).await;
+            info!("🕐 Query completed in {}ms for connection {} (GraphQL: {:?}ms, DataFusion: {:?}ms)", 
+                overall_time_ms, conn_id, 
+                final_result.timings.graphql_time_ms,
+                final_result.timings.datafusion_time_ms);
+        } else {
+            debug!("🔍 No connection_id provided, timing data not saved to session manager");
         }
+
+        Ok(final_result)
     }
 
     async fn execute_taglist_datafusion_query(
@@ -275,7 +327,9 @@ impl QueryHandler {
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
     ) -> Result<QueryResult> {
+        let graphql_start = std::time::Instant::now();
         let results = Self::fetch_tag_list_data(query_info, session).await?;
+        let graphql_time_ms = graphql_start.elapsed().as_millis() as u64;
 
         // Define the schema
         let schema = Arc::new(Schema::new(vec![
@@ -309,11 +363,19 @@ impl QueryHandler {
         )?;
 
         // Execute the query using DataFusion
-        let results =
+        let (results, datafusion_time_ms) =
             datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
 
         // Convert RecordBatch results directly to QueryResult
-        QueryResult::from_record_batches(results)
+        let mut query_result = QueryResult::from_record_batches(results)?;
+        
+        // Add timing information
+        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
+        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
+        
+        debug!("🔍 TagList query timings: GraphQL={}ms, DataFusion={}ms", graphql_time_ms, datafusion_time_ms);
+        
+        Ok(query_result)
     }
 
     async fn execute_loggedtagvalues_datafusion_query(
@@ -321,7 +383,9 @@ impl QueryHandler {
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
     ) -> Result<QueryResult> {
+        let graphql_start = std::time::Instant::now();
         let results = Self::fetch_logged_tag_values_data(query_info, session).await?;
+        let graphql_time_ms = graphql_start.elapsed().as_millis() as u64;
 
         // Define the schema
         let schema = Arc::new(Schema::new(vec![
@@ -384,11 +448,14 @@ impl QueryHandler {
         )?;
 
         // Execute the query using DataFusion
-        let results =
+        let (results, datafusion_time_ms) =
             datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
 
         // Convert RecordBatch results directly to QueryResult
-        QueryResult::from_record_batches(results)
+        let mut query_result = QueryResult::from_record_batches(results)?;
+        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
+        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
+        Ok(query_result)
     }
 
     async fn execute_datafusion_query(
@@ -396,7 +463,9 @@ impl QueryHandler {
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
     ) -> Result<QueryResult> {
+        let graphql_start = std::time::Instant::now();
         let results = Self::fetch_tag_values_data(query_info, session).await?;
+        let graphql_time_ms = graphql_start.elapsed().as_millis() as u64;
 
         // Define the schema
         let schema = Arc::new(Schema::new(vec![
@@ -467,11 +536,14 @@ impl QueryHandler {
         )?;
 
         // Execute the query using DataFusion
-        let results =
+        let (results, datafusion_time_ms) =
             datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
 
         // Convert RecordBatch results directly to QueryResult
-        QueryResult::from_record_batches(results)
+        let mut query_result = QueryResult::from_record_batches(results)?;
+        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
+        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
+        Ok(query_result)
     }
 
     async fn execute_from_less_query(
@@ -505,7 +577,9 @@ impl QueryHandler {
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
     ) -> Result<QueryResult> {
+        let graphql_start = std::time::Instant::now();
         let results = Self::fetch_active_alarms_data(query_info, session).await?;
+        let graphql_time_ms = graphql_start.elapsed().as_millis() as u64;
 
         // Define the schema
         let schema = Arc::new(Schema::new(vec![
@@ -635,11 +709,14 @@ impl QueryHandler {
         )?;
 
         // Execute the query using DataFusion
-        let results =
+        let (results, datafusion_time_ms) =
             datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
 
         // Convert RecordBatch results directly to QueryResult
-        QueryResult::from_record_batches(results)
+        let mut query_result = QueryResult::from_record_batches(results)?;
+        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
+        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
+        Ok(query_result)
     }
 
     async fn execute_logged_alarms_datafusion_query(
@@ -647,7 +724,9 @@ impl QueryHandler {
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
     ) -> Result<QueryResult> {
+        let graphql_start = std::time::Instant::now();
         let results = Self::fetch_logged_alarms_data(query_info, session).await?;
+        let graphql_time_ms = graphql_start.elapsed().as_millis() as u64;
 
         // Define the schema
         let schema = Arc::new(Schema::new(vec![
@@ -782,10 +861,13 @@ impl QueryHandler {
         )?;
 
         // Execute the query using DataFusion
-        let results =
+        let (results, datafusion_time_ms) =
             datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
 
         // Convert RecordBatch results directly to QueryResult
-        QueryResult::from_record_batches(results)
+        let mut query_result = QueryResult::from_record_batches(results)?;
+        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
+        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
+        Ok(query_result)
     }
 }

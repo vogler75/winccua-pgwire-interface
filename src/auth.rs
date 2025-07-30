@@ -1,12 +1,57 @@
 use crate::graphql::{GraphQLClient, Session};
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+static CONNECTION_ID_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ConnectionInfo {
+    pub connection_id: u32,                 // Unique connection ID (simulates PID)
+    pub session_id: Option<String>,         // Links to AuthenticatedSession (None if not authenticated)
+    pub username: Option<String>,           // Username (None if not authenticated)
+    pub database_name: Option<String>,      // Database name (None if not specified)
+    pub client_addr: SocketAddr,            // Client IP and port
+    pub application_name: Option<String>,   // Client application name (None if not provided)
+    pub backend_start: DateTime<Utc>,       // Connection start time
+    pub query_start: Option<DateTime<Utc>>, // Current query start time
+    pub query_stop: Option<DateTime<Utc>>,  // Query completion time
+    pub state: ConnectionState,             // Connection state
+    pub last_query: String,                 // Last or current query
+    pub graphql_time_ms: Option<u64>,       // GraphQL execution time in milliseconds
+    pub datafusion_time_ms: Option<u64>,    // DataFusion execution time in milliseconds
+    pub overall_time_ms: Option<u64>,       // Overall query execution time in milliseconds
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+pub enum ConnectionState {
+    Active,
+    Idle,
+    IdleInTransaction,
+    IdleInTransactionAborted,
+}
+
+impl ConnectionState {
+    #[allow(dead_code)]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConnectionState::Active => "active",
+            ConnectionState::Idle => "idle",
+            ConnectionState::IdleInTransaction => "idle in transaction",
+            ConnectionState::IdleInTransactionAborted => "idle in transaction (aborted)",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AuthenticatedSession {
@@ -60,15 +105,22 @@ impl AuthenticatedSession {
 #[derive(Debug)]
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, AuthenticatedSession>>>,
+    connections: Arc<RwLock<HashMap<u32, ConnectionInfo>>>,
     graphql_url: String,
     extension_task_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     extension_interval_secs: u64,
 }
 
 impl SessionManager {
+    #[allow(dead_code)]
+    pub fn new(graphql_url: String) -> Self {
+        Self::with_extension_interval(graphql_url, 600) // Default to 10 minutes
+    }
+
     pub fn with_extension_interval(graphql_url: String, extension_interval_secs: u64) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            connections: Arc::new(RwLock::new(HashMap::new())),
             graphql_url,
             extension_task_handle: Arc::new(RwLock::new(None)),
             extension_interval_secs,
@@ -219,6 +271,144 @@ impl SessionManager {
         if let Some(handle) = handle_guard.take() {
             handle.abort();
             info!("🛑 Stopped session extension background task");
+        }
+    }
+
+
+    /// Register a new connection (after authentication)
+    pub async fn register_connection(
+        &self,
+        session_id: &str,
+        client_addr: SocketAddr,
+        application_name: String,
+    ) -> Result<u32> {
+        let sessions = self.sessions.read().await;
+        let session = sessions.get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+        
+        let connection_id = CONNECTION_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+        
+        let connection_info = ConnectionInfo {
+            connection_id,
+            session_id: Some(session_id.to_string()),
+            username: Some(session.username.clone()),
+            database_name: Some("winccua".to_string()),
+            client_addr,
+            application_name: Some(application_name),
+            backend_start: Utc::now(),
+            query_start: None,
+            query_stop: None,
+            state: ConnectionState::Idle,
+            last_query: String::new(),
+            graphql_time_ms: None,
+            datafusion_time_ms: None,
+            overall_time_ms: None,
+        };
+        
+        let mut connections = self.connections.write().await;
+        connections.insert(connection_id, connection_info);
+        
+        info!("📊 Registered connection {} for user {} from {}", 
+            connection_id, session.username, client_addr);
+        
+        Ok(connection_id)
+    }
+    
+    /// Unregister a connection
+    pub async fn unregister_connection(&self, connection_id: u32) {
+        let mut connections = self.connections.write().await;
+        if let Some(conn) = connections.remove(&connection_id) {
+            info!("📊 Unregistered connection {} for user {:?} from {}", 
+                connection_id, conn.username, conn.client_addr);
+        }
+    }
+    
+    /// Update connection state for query execution
+    #[allow(dead_code)]
+    pub async fn start_query(&self, connection_id: u32, query: &str) {
+        let mut connections = self.connections.write().await;
+        if let Some(conn) = connections.get_mut(&connection_id) {
+            conn.state = ConnectionState::Active;
+            conn.query_start = Some(Utc::now());
+            conn.query_stop = None;
+            conn.last_query = query.to_string();
+            conn.graphql_time_ms = None;
+            conn.datafusion_time_ms = None;
+            conn.overall_time_ms = None;
+            debug!("📊 Connection {} started query: {}", connection_id, query);
+        }
+    }
+    
+    /// Update connection state after query completion
+    #[allow(dead_code)]
+    pub async fn end_query(&self, connection_id: u32) {
+        let mut connections = self.connections.write().await;
+        if let Some(conn) = connections.get_mut(&connection_id) {
+            conn.state = ConnectionState::Idle;
+            conn.query_stop = Some(Utc::now());
+            
+            // Calculate overall time if query_start is available
+            if let Some(start_time) = conn.query_start {
+                if let Some(stop_time) = conn.query_stop {
+                    let duration = stop_time.signed_duration_since(start_time);
+                    conn.overall_time_ms = Some(duration.num_milliseconds().max(0) as u64);
+                }
+            }
+            
+            debug!("📊 Connection {} ended query", connection_id);
+        }
+    }
+
+    /// Update query timing metrics
+    #[allow(dead_code)]
+    pub async fn set_query_timings(&self, connection_id: u32, graphql_time_ms: Option<u64>, datafusion_time_ms: Option<u64>) {
+        let mut connections = self.connections.write().await;
+        if let Some(conn) = connections.get_mut(&connection_id) {
+            conn.graphql_time_ms = graphql_time_ms;
+            conn.datafusion_time_ms = datafusion_time_ms;
+            info!("📊 Updated connection {} timing - GraphQL: {:?}ms, DataFusion: {:?}ms", 
+                connection_id, graphql_time_ms, datafusion_time_ms);
+        } else {
+            warn!("📊 Could not find connection {} to update timing", connection_id);
+        }
+    }
+
+    /// Update query timing metrics including overall time
+    #[allow(dead_code)]
+    pub async fn set_all_query_timings(&self, connection_id: u32, graphql_time_ms: Option<u64>, datafusion_time_ms: Option<u64>, overall_time_ms: Option<u64>) {
+        let mut connections = self.connections.write().await;
+        if let Some(conn) = connections.get_mut(&connection_id) {
+            conn.graphql_time_ms = graphql_time_ms;
+            conn.datafusion_time_ms = datafusion_time_ms;
+            conn.overall_time_ms = overall_time_ms;
+            info!("📊 Updated connection {} timing - GraphQL: {:?}ms, DataFusion: {:?}ms, Overall: {:?}ms", 
+                connection_id, graphql_time_ms, datafusion_time_ms, overall_time_ms);
+        } else {
+            warn!("📊 Could not find connection {} to update timing", connection_id);
+        }
+    }
+    
+    /// Get all active connections
+    #[allow(dead_code)]
+    pub async fn get_connections(&self) -> Vec<ConnectionInfo> {
+        let connections = self.connections.read().await;
+        connections.values().cloned().collect()
+    }
+    
+    /// Update connection state for transactions
+    #[allow(dead_code)]
+    pub async fn set_transaction_state(&self, connection_id: u32, in_transaction: bool, aborted: bool) {
+        let mut connections = self.connections.write().await;
+        if let Some(conn) = connections.get_mut(&connection_id) {
+            conn.state = if in_transaction {
+                if aborted {
+                    ConnectionState::IdleInTransactionAborted
+                } else {
+                    ConnectionState::IdleInTransaction
+                }
+            } else {
+                ConnectionState::Idle
+            };
         }
     }
 }

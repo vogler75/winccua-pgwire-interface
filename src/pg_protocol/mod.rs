@@ -104,7 +104,8 @@ impl PgProtocolServer {
 
                 if let Err(e) = connection_handler::handle_connection(
                     socket, 
-                    session_manager, 
+                    session_manager.clone(), 
+                    client_addr,
                     tls_acceptor
                 ).await
                 {

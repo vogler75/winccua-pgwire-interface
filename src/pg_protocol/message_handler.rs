@@ -1,10 +1,11 @@
+use crate::auth::SessionManager;
 use crate::sql_handler::SqlHandler;
 use crate::tables::SqlResult;
 use anyhow::{anyhow, Result};
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use super::{
-    query_execution::handle_simple_query,
     response::{
         create_bind_complete_response, create_close_complete_response,
         create_empty_row_description_response,
@@ -19,6 +20,8 @@ pub(super) async fn handle_postgres_message(
     data: &[u8],
     connection_state: &mut ConnectionState,
     session: &crate::auth::AuthenticatedSession,
+    session_manager: Arc<SessionManager>,
+    connection_id: Option<u32>,
 ) -> Result<Vec<u8>> {
     if data.len() < 5 {
         return Err(anyhow!("Message too short"));
@@ -46,11 +49,11 @@ pub(super) async fn handle_postgres_message(
     );
 
     let result = match message_type {
-        b'Q' => handle_simple_query_message(payload, session).await,
+        b'Q' => handle_simple_query_message(payload, session, session_manager.clone(), connection_id).await,
         b'P' => handle_parse_message(payload, connection_state).await,
         b'B' => handle_bind_message(payload, connection_state).await,
-        b'E' => handle_execute_message(payload, connection_state, session).await,
-        b'D' => handle_describe_message(payload, connection_state, session).await,
+        b'E' => handle_execute_message(payload, connection_state, session, session_manager.clone(), connection_id).await,
+        b'D' => handle_describe_message(payload, connection_state, session, session_manager.clone(), connection_id).await,
         b'C' => handle_close_message(payload, connection_state).await,
         b'S' => handle_sync_message().await,
         b'X' => handle_terminate_message().await,
@@ -84,6 +87,8 @@ pub(super) async fn handle_postgres_message(
 async fn handle_simple_query_message(
     payload: &[u8],
     session: &crate::auth::AuthenticatedSession,
+    session_manager: Arc<SessionManager>,
+    connection_id: Option<u32>,
 ) -> Result<Vec<u8>> {
     let query_str = std::str::from_utf8(payload)
         .map_err(|_| anyhow!("Invalid UTF-8 in query"))?
@@ -91,10 +96,35 @@ async fn handle_simple_query_message(
 
     info!("📥 SQL Query: {}", query_str.trim());
 
-    match handle_simple_query(query_str, session).await {
-        Ok(response) => Ok(response),
-        Err(e) => Err(e),
+    // Start query tracking with timing
+    let query_start = std::time::Instant::now();
+    if let Some(conn_id) = connection_id {
+        session_manager.start_query(conn_id, query_str).await;
     }
+
+    let result = match super::query_execution::handle_simple_query_with_connection(query_str, session, session_manager.clone(), connection_id).await {
+        Ok(response) => {
+            // Capture overall timing and extract component timings from logs
+            let overall_time_ms = query_start.elapsed().as_millis() as u64;
+            
+            if let Some(conn_id) = connection_id {
+                // End query tracking - overall time will be calculated automatically
+                session_manager.end_query(conn_id).await;
+                
+                info!("🕐 Simple query completed in {}ms for connection {}", overall_time_ms, conn_id);
+            }
+            Ok(response)
+        },
+        Err(e) => {
+            // End query tracking on error
+            if let Some(conn_id) = connection_id {
+                session_manager.end_query(conn_id).await;
+            }
+            Err(e)
+        }
+    };
+
+    result
 }
 
 async fn handle_parse_message(
@@ -290,6 +320,8 @@ async fn handle_execute_message(
     payload: &[u8],
     connection_state: &ConnectionState,
     session: &crate::auth::AuthenticatedSession,
+    session_manager: Arc<SessionManager>,
+    connection_id: Option<u32>,
 ) -> Result<Vec<u8>> {
     let mut pos = 0;
 
@@ -326,8 +358,14 @@ async fn handle_execute_message(
 
     info!("🔍 Executing parameterized query: {}", final_query.trim());
 
+    // Start query tracking with timing
+    let query_start = std::time::Instant::now();
+    if let Some(conn_id) = connection_id {
+        session_manager.start_query(conn_id, &final_query).await;
+    }
+
     // Execute the query - for Extended Query protocol, we need a different response format
-    match super::query_execution::handle_extended_query(&final_query, session).await {
+    let result = match super::query_execution::handle_extended_query_with_connection(&final_query, session, session_manager.clone(), connection_id).await {
         Ok(response) => {
             debug!("📤 Extended query result: {} bytes", response.len());
             // Log the message types in the response
@@ -338,16 +376,33 @@ async fn handle_execute_message(
                 debug!("   Message type '{}' ({} bytes)", msg_type, msg_len);
                 pos += 1 + msg_len;
             }
+            
+            // Capture timing and end query tracking
+            let overall_time_ms = query_start.elapsed().as_millis() as u64;
+            if let Some(conn_id) = connection_id {
+                session_manager.end_query(conn_id).await;
+                info!("🕐 Extended query completed in {}ms for connection {}", overall_time_ms, conn_id);
+            }
             Ok(response)
         }
-        Err(e) => Err(e),
-    }
+        Err(e) => {
+            // End query tracking on error
+            if let Some(conn_id) = connection_id {
+                session_manager.end_query(conn_id).await;
+            }
+            Err(e)
+        }
+    };
+
+    result
 }
 
 async fn handle_describe_message(
     payload: &[u8],
     connection_state: &ConnectionState,
     session: &crate::auth::AuthenticatedSession,
+    session_manager: Arc<SessionManager>,
+    connection_id: Option<u32>,
 ) -> Result<Vec<u8>> {
     if payload.is_empty() {
         return Err(anyhow!("Empty describe message"));
@@ -380,7 +435,7 @@ async fn handle_describe_message(
                 {
                     // Execute the query to get proper column types (like Execute message does)
                     tracing::info!("🚀 Describe message: Executing query to get proper column types");
-                    match crate::query_handler::QueryHandler::execute_query(&statement.query, session).await {
+                    match crate::query_handler::QueryHandler::execute_query_with_connection(&statement.query, session, session_manager.clone(), connection_id).await {
                         Ok(query_result) => {
                             tracing::info!("🚀 Describe message: Generated QueryResult with {} columns and proper OIDs", query_result.columns.len());
                             response.extend_from_slice(&create_row_description_response_with_types(&query_result));
@@ -426,7 +481,7 @@ async fn handle_describe_message(
                     
                     // For SELECT queries, execute the query to get proper column types
                     tracing::info!("🚀 Portal Describe: Executing query to get proper column types");
-                    match crate::query_handler::QueryHandler::execute_query(&statement.query, session).await {
+                    match crate::query_handler::QueryHandler::execute_query_with_connection(&statement.query, session, session_manager.clone(), connection_id).await {
                         Ok(query_result) => {
                             tracing::info!("🚀 Portal Describe: Generated QueryResult with {} columns and proper OIDs", query_result.columns.len());
                             Ok(create_row_description_response_with_types(&query_result))

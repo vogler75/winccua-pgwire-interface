@@ -9,6 +9,7 @@ pub enum VirtualTable {
     TagList,
     InformationSchemaTables,
     InformationSchemaColumns,
+    PgStatActivity,
     FromLessQuery, // For queries without FROM clause like SELECT 1, SELECT VERSION(), etc.
 }
 
@@ -22,6 +23,7 @@ impl ToString for VirtualTable {
             VirtualTable::TagList => "taglist".to_string(),
             VirtualTable::InformationSchemaTables => "information_schema.tables".to_string(),
             VirtualTable::InformationSchemaColumns => "information_schema.columns".to_string(),
+            VirtualTable::PgStatActivity => "pg_stat_activity".to_string(),
             VirtualTable::FromLessQuery => "dual".to_string(), // Use Oracle-style "dual" table name
         }
     }
@@ -43,6 +45,7 @@ impl VirtualTable {
                 "activealarms" => Some(Self::ActiveAlarms),
                 "loggedalarms" => Some(Self::LoggedAlarms),
                 "taglist" => Some(Self::TagList),
+                "pg_stat_activity" => Some(Self::PgStatActivity),
                 _ => None,
             }
         }
@@ -170,6 +173,24 @@ impl VirtualTable {
                 ("is_generated", Type::TEXT),
                 ("generation_expression", Type::TEXT),
                 ("is_updatable", Type::TEXT),
+            ],
+            Self::PgStatActivity => vec![
+                ("datid", Type::INT4),           // OID of database (always 0 for now)
+                ("datname", Type::TEXT),         // Database name
+                ("pid", Type::INT4),             // Process ID (connection ID)
+                ("usename", Type::TEXT),         // Username
+                ("application_name", Type::TEXT), // Client application name
+                ("client_addr", Type::TEXT),     // Client IP address
+                ("client_hostname", Type::TEXT), // Client hostname (NULL for now)
+                ("client_port", Type::INT4),     // Client port
+                ("backend_start", Type::TIMESTAMP), // Connection start time
+                ("query_start", Type::TIMESTAMP),   // Query start time
+                ("query_stop", Type::TIMESTAMP),    // Query completion time
+                ("state", Type::TEXT),           // Connection state
+                ("query", Type::TEXT),           // Current/last query
+                ("graphql_time", Type::INT8),    // GraphQL execution time in ms
+                ("datafusion_time", Type::INT8), // DataFusion execution time in ms
+                ("overall_time", Type::INT8),    // Overall query execution time in ms
             ],
             Self::FromLessQuery => vec![
                 // Empty schema - FROM-less queries don't have predefined columns

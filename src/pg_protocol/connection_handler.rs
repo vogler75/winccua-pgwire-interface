@@ -1,5 +1,6 @@
 use crate::auth::SessionManager;
 use anyhow::Result;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -11,9 +12,10 @@ use super::startup::handle_postgres_startup;
 pub(super) async fn handle_connection(
     mut socket: TcpStream,
     session_manager: Arc<SessionManager>,
+    client_addr: SocketAddr,
     tls_acceptor: Option<TlsAcceptor>,
 ) -> Result<()> {
-    let peer_addr = socket.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
+    let peer_addr = client_addr;
     info!("🔌 New connection established from {}", peer_addr);
 
     // Read first few bytes to see what kind of connection this is
@@ -62,7 +64,7 @@ pub(super) async fn handle_connection(
             };
             
             // Now handle the startup message over the encrypted connection
-            return handle_postgres_startup_tls(tls_stream, session_manager).await;
+            return handle_postgres_startup_tls(tls_stream, session_manager, peer_addr).await;
             
         } else {
             info!("   📌 SSL Status: Not supported by server (TLS not configured)");
@@ -104,6 +106,7 @@ pub(super) async fn handle_connection(
                 socket,
                 session_manager,
                 &startup_buffer[..startup_n],
+                peer_addr,
             )
             .await;
         }
@@ -113,7 +116,7 @@ pub(super) async fn handle_connection(
         warn!("🐘 PostgreSQL wire protocol detected from {}!", peer_addr);
 
         // For now, attempt to handle it as PostgreSQL startup
-        return handle_postgres_startup(socket, session_manager, &peek_buffer[..n])
+        return handle_postgres_startup(socket, session_manager, &peek_buffer[..n], peer_addr)
             .await;
     }
 
@@ -276,7 +279,7 @@ async fn handle_simple_text_protocol(
 
                 if query.trim().to_lowercase().starts_with("select") {
                     debug!("🔍 Processing SELECT query from {}", peer_addr);
-                    match super::query_execution::handle_simple_query(&query, &session).await {
+                    match super::query_execution::handle_simple_query(&query, &session, session_manager.clone()).await {
                         Ok(response) => {
                             debug!(
                                 "📤 Sending response to {} ({} bytes)",
@@ -316,12 +319,12 @@ async fn handle_simple_text_protocol(
 async fn handle_postgres_startup_tls<T>(
     mut stream: T,
     session_manager: Arc<SessionManager>,
+    peer_addr: SocketAddr,
 ) -> Result<()> 
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
-    let _peer_addr = "TLS-encrypted".to_string(); // We can't get peer_addr from TLS stream easily
-    info!("🔒 Handling encrypted PostgreSQL startup");
+    info!("🔒 Handling encrypted PostgreSQL startup for {}", peer_addr);
 
     // Read the startup message over TLS
     let mut startup_buffer = [0; 1024];
@@ -340,6 +343,7 @@ where
         stream,
         session_manager,
         &startup_buffer[..startup_n],
+        Some(peer_addr),
     )
     .await;
 }

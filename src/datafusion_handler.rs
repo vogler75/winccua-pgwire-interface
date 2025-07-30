@@ -8,7 +8,7 @@ pub async fn execute_query(
     sql: &str,
     batch: RecordBatch,
     table_name: &str,
-) -> Result<Vec<RecordBatch>> {
+) -> Result<(Vec<RecordBatch>, u64)> {
     let start_time = Instant::now();
     
     let ctx = SessionContext::new();
@@ -16,8 +16,8 @@ pub async fn execute_query(
     let df = ctx.sql(sql).await?;
     let results = df.collect().await?;
     
-    let elapsed_ms = start_time.elapsed().as_millis();
+    let elapsed_ms = start_time.elapsed().as_millis() as u64;
     info!("⚡ DataFusion query execution completed in {} ms", elapsed_ms);
     
-    Ok(results)
+    Ok((results, elapsed_ms))
 }

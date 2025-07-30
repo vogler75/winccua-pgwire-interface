@@ -1,4 +1,6 @@
+use crate::auth::SessionManager;
 use anyhow::Result;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 // Helper function to create a simple single-row QueryResult
@@ -43,9 +45,20 @@ fn create_empty_query_response() -> String {
     "EMPTY_QUERY_RESPONSE".to_string()
 }
 
+#[allow(dead_code)]
 pub(super) async fn handle_extended_query(
     query: &str,
     session: &crate::auth::AuthenticatedSession,
+    session_manager: Arc<SessionManager>,
+) -> Result<Vec<u8>> {
+    handle_extended_query_with_connection(query, session, session_manager, None).await
+}
+
+pub(super) async fn handle_extended_query_with_connection(
+    query: &str,
+    session: &crate::auth::AuthenticatedSession,
+    session_manager: Arc<SessionManager>,
+    connection_id: Option<u32>,
 ) -> Result<Vec<u8>> {
     debug!("🔍 Processing extended query: {}", query.trim());
 
@@ -79,7 +92,7 @@ pub(super) async fn handle_extended_query(
                 "🔧 SET statement detected, routing to QueryHandler: {}",
                 query.trim()
             );
-            let result = crate::query_handler::QueryHandler::execute_query(query, session).await?;
+            let result = crate::query_handler::QueryHandler::execute_query_with_connection(query, session, session_manager.clone(), connection_id).await?;
             return Ok(super::response::format_query_result_as_extended_query_result(&result));
         }
 
@@ -91,13 +104,23 @@ pub(super) async fn handle_extended_query(
     }
 
     // Use the new query handler for all SQL processing
-    let result = crate::query_handler::QueryHandler::execute_query(query, session).await?;
+    let result = crate::query_handler::QueryHandler::execute_query_with_connection(query, session, session_manager.clone(), connection_id).await?;
     Ok(super::response::format_query_result_as_extended_query_result(&result))
 }
 
 pub(super) async fn handle_simple_query(
     query: &str,
     session: &crate::auth::AuthenticatedSession,
+    session_manager: Arc<SessionManager>,
+) -> Result<Vec<u8>> {
+    handle_simple_query_with_connection(query, session, session_manager, None).await
+}
+
+pub(super) async fn handle_simple_query_with_connection(
+    query: &str,
+    session: &crate::auth::AuthenticatedSession,
+    session_manager: Arc<SessionManager>,
+    connection_id: Option<u32>,
 ) -> Result<Vec<u8>> {
     debug!("🔍 Processing query: {}", query.trim());
 
@@ -138,7 +161,7 @@ pub(super) async fn handle_simple_query(
                 "🔧 SET statement detected, routing to QueryHandler: {}",
                 query.trim()
             );
-            let result = crate::query_handler::QueryHandler::execute_query(query, session).await?;
+            let result = crate::query_handler::QueryHandler::execute_query_with_connection(query, session, session_manager.clone(), connection_id).await?;
             return Ok(super::response::format_query_result_as_postgres_result(&result));
         }
 
@@ -150,7 +173,7 @@ pub(super) async fn handle_simple_query(
     }
 
     // Use the new query handler for all SQL processing
-    let result = crate::query_handler::QueryHandler::execute_query(query, session).await?;
+    let result = crate::query_handler::QueryHandler::execute_query_with_connection(query, session, session_manager.clone(), connection_id).await?;
     tracing::info!("🚀 Received result from QueryHandler");
     Ok(super::response::format_query_result_as_postgres_result(&result))
 }
