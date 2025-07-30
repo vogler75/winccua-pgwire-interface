@@ -137,7 +137,18 @@ impl SqlHandler {
 
         let table_name = match &select.from[0].relation {
             datafusion::sql::sqlparser::ast::TableFactor::Table { name, .. } => {
-                let parts: Vec<String> = name.0.iter().map(|p| p.to_string()).collect();
+                // Extract the actual identifier value without quotes
+                // ObjectNamePart has a to_string() that includes quotes, but we need the raw value
+                let parts: Vec<String> = name.0.iter().map(|part| {
+                    let part_str = part.to_string();
+                    // Remove quotes if present (handles both " and ` quotes)
+                    if (part_str.starts_with('"') && part_str.ends_with('"')) ||
+                       (part_str.starts_with('`') && part_str.ends_with('`')) {
+                        part_str[1..part_str.len()-1].to_string()
+                    } else {
+                        part_str
+                    }
+                }).collect();
                 parts.join(".")
             }
             _ => return Err(anyhow!("Only simple table names are supported")),
@@ -1275,6 +1286,63 @@ mod tests {
                 }
                 SqlResult::SetStatement(_) => {
                     panic!("Tag query incorrectly identified as SET statement: {}", sql);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_quoted_table_names() {
+        // Test that quoted table names work correctly for ALL tables
+        let test_cases = [
+            // Test all virtual tables with and without quotes
+            ("SELECT * FROM tagvalues WHERE tag_name = 'test'", VirtualTable::TagValues),
+            ("SELECT * FROM \"tagvalues\" WHERE tag_name = 'test'", VirtualTable::TagValues),
+            
+            ("SELECT * FROM loggedtagvalues WHERE tag_name = 'test'", VirtualTable::LoggedTagValues),
+            ("SELECT * FROM \"loggedtagvalues\" WHERE tag_name = 'test'", VirtualTable::LoggedTagValues),
+            
+            ("SELECT * FROM activealarms", VirtualTable::ActiveAlarms),
+            ("SELECT * FROM \"activealarms\"", VirtualTable::ActiveAlarms),
+            
+            ("SELECT * FROM loggedalarms", VirtualTable::LoggedAlarms),
+            ("SELECT * FROM \"loggedalarms\"", VirtualTable::LoggedAlarms),
+            
+            ("SELECT * FROM taglist", VirtualTable::TagList),
+            ("SELECT * FROM \"taglist\"", VirtualTable::TagList),
+            
+            ("SELECT * FROM pg_stat_activity", VirtualTable::PgStatActivity),
+            ("SELECT * FROM \"pg_stat_activity\"", VirtualTable::PgStatActivity),
+            
+            // Test schema-qualified tables
+            ("SELECT * FROM information_schema.tables", VirtualTable::InformationSchemaTables),
+            ("SELECT * FROM \"information_schema\".\"tables\"", VirtualTable::InformationSchemaTables),
+            
+            ("SELECT * FROM information_schema.columns", VirtualTable::InformationSchemaColumns),
+            ("SELECT * FROM \"information_schema\".\"columns\"", VirtualTable::InformationSchemaColumns),
+        ];
+        
+        for (sql, expected_table) in test_cases {
+            let result = SqlHandler::parse_query(sql);
+            assert!(result.is_ok(), "Failed to parse query: {}: {:?}", sql, result.err());
+            
+            match result.unwrap() {
+                SqlResult::Query(query_info) => {
+                    match (&expected_table, &query_info.table) {
+                        (VirtualTable::TagValues, VirtualTable::TagValues) => {},
+                        (VirtualTable::LoggedTagValues, VirtualTable::LoggedTagValues) => {},
+                        (VirtualTable::ActiveAlarms, VirtualTable::ActiveAlarms) => {},
+                        (VirtualTable::LoggedAlarms, VirtualTable::LoggedAlarms) => {},
+                        (VirtualTable::TagList, VirtualTable::TagList) => {},
+                        (VirtualTable::PgStatActivity, VirtualTable::PgStatActivity) => {},
+                        (VirtualTable::InformationSchemaTables, VirtualTable::InformationSchemaTables) => {},
+                        (VirtualTable::InformationSchemaColumns, VirtualTable::InformationSchemaColumns) => {},
+                        _ => panic!("Expected {:?} but got {:?} for query: {}", expected_table, query_info.table, sql),
+                    }
+                    println!("✅ Quoted table name test passed: '{}'", sql);
+                }
+                SqlResult::SetStatement(_) => {
+                    panic!("Query incorrectly identified as SET statement: {}", sql);
                 }
             }
         }
