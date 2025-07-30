@@ -381,7 +381,7 @@ impl SessionManager {
             conn.graphql_time_ms = graphql_time_ms;
             conn.datafusion_time_ms = datafusion_time_ms;
             conn.overall_time_ms = overall_time_ms;
-            info!("📊 Updated connection {} timing - GraphQL: {:?}ms, DataFusion: {:?}ms, Overall: {:?}ms", 
+            debug!("📊 Updated connection {} timing - GraphQL: {:?}ms, DataFusion: {:?}ms, Overall: {:?}ms", 
                 connection_id, graphql_time_ms, datafusion_time_ms, overall_time_ms);
         } else {
             warn!("📊 Could not find connection {} to update timing", connection_id);

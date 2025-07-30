@@ -2,7 +2,7 @@ use anyhow::Result;
 use arrow::record_batch::RecordBatch;
 use datafusion::prelude::*;
 use std::time::Instant;
-use tracing::info;
+use tracing::debug;
 
 pub async fn execute_query(
     sql: &str,
@@ -17,7 +17,7 @@ pub async fn execute_query(
     let results = df.collect().await?;
     
     let elapsed_ms = start_time.elapsed().as_millis() as u64;
-    info!("⚡ DataFusion query execution completed in {} ms", elapsed_ms);
+    debug!("⚡ DataFusion query execution completed in {} ms", elapsed_ms);
     
     Ok((results, elapsed_ms))
 }

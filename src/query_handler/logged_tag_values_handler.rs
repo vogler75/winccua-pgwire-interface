@@ -11,7 +11,7 @@ impl QueryHandler {
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
     ) -> Result<Vec<crate::graphql::types::LoggedTagValue>> {
-        info!("📈 Fetching LoggedTagValues data");
+        debug!("📈 Fetching LoggedTagValues data");
 
         // Get tag names - handle LIKE patterns via browse if needed
         let tag_names = if query_info.requires_browse() {

@@ -595,7 +595,7 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
     response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
     response.push(b'I'); // Status: 'I' = idle (not in transaction)
     
-    tracing::info!("🔧 Complete PostgreSQL response: {} bytes total", response.len());
+    tracing::debug!("🔧 Complete PostgreSQL response: {} bytes total", response.len());
     
     response
 }

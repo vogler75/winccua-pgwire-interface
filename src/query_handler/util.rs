@@ -2,9 +2,8 @@ use crate::auth::AuthenticatedSession;
 use crate::query_handler::QueryHandler;
 use crate::tables::{ColumnFilter, FilterOperator, QueryInfo};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use std::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 impl QueryHandler {
     pub(super) async fn resolve_like_patterns(
@@ -134,80 +133,4 @@ impl QueryHandler {
         None
     }
 
-    #[allow(dead_code)]
-    pub(super) fn convert_timestamp_to_postgres_format(timestamp_str: &str) -> String {
-        // GraphQL returns UTC timestamps - format as TIMESTAMP (without timezone)
-        // PostgreSQL TIMESTAMP format: YYYY-MM-DD HH:MM:SS.ssssss (no timezone)
-
-        // If it's already in PostgreSQL TIMESTAMP format, keep it as-is
-        if timestamp_str.matches('-').count() == 2
-            && timestamp_str.contains(' ')
-            && timestamp_str.contains(':')
-            && !timestamp_str.contains('+')
-            && !timestamp_str.contains('Z')
-        {
-            return timestamp_str.to_string();
-        }
-
-        // Try to parse and reformat to TIMESTAMP (without timezone)
-        // First try parsing as ISO 8601 format (most common from GraphQL)
-        if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp_str) {
-            // Format as TIMESTAMP without timezone information
-            return dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string();
-        }
-
-        // Try parsing without timezone (assume it's already UTC)
-        if let Ok(dt) = timestamp_str.parse::<DateTime<Utc>>() {
-            return dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string();
-        }
-
-        // Try common formats and convert to TIMESTAMP format
-        for format in &[
-            "%Y-%m-%dT%H:%M:%S%.fZ",
-            "%Y-%m-%dT%H:%M:%SZ",
-            "%Y-%m-%d %H:%M:%S%.f",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S%.f%z",
-            "%Y-%m-%dT%H:%M:%S%z",
-        ] {
-            if let Ok(dt) = DateTime::parse_from_str(timestamp_str, format) {
-                // Format as TIMESTAMP without timezone
-                return dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string();
-            }
-        }
-
-        // If all parsing attempts fail, return the original string
-        warn!(
-            "Failed to parse timestamp '{}', using as-is",
-            timestamp_str
-        );
-        timestamp_str.to_string()
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn create_csv_header_with_types(query_info: &QueryInfo) -> String {
-        // Create header with type information that the formatter can use
-        // Format: column1:type1,column2:type2,etc
-        let header_with_types: Vec<String> = query_info
-            .columns
-            .iter()
-            .map(|column| {
-                // Resolve alias to original column name to get the correct type
-                let original_column = query_info.column_mappings.get(column).unwrap_or(column);
-                let type_info = match original_column.as_str() {
-                    "numeric_value" | "timestamp_ms" => "NUMERIC",
-                    "timestamp"
-                    | "raise_time"
-                    | "acknowledgment_time"
-                    | "clear_time"
-                    | "reset_time"
-                    | "modification_time" => "TIMESTAMP",
-                    _ => "TEXT",
-                };
-                format!("{}:{}", column, type_info)
-            })
-            .collect();
-
-        format!("{}\n", header_with_types.join(","))
-    }
 }

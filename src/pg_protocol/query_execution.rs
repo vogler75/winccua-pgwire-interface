@@ -174,7 +174,7 @@ pub(super) async fn handle_simple_query_with_connection(
 
     // Use the new query handler for all SQL processing
     let result = crate::query_handler::QueryHandler::execute_query_with_connection(query, session, session_manager.clone(), connection_id).await?;
-    tracing::info!("🚀 Received result from QueryHandler");
+    tracing::debug!("🚀 Received result from QueryHandler");
     Ok(super::response::format_query_result_as_postgres_result(&result))
 }
 

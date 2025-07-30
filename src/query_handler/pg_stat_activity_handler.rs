@@ -6,14 +6,14 @@ use arrow::array::{Int64Array, StringArray, TimestampNanosecondArray};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug};
 
 pub async fn handle_pg_stat_activity_query(
     sql: &str,
     _session: &AuthenticatedSession,
     session_manager: Arc<SessionManager>,
 ) -> Result<QueryResult> {
-    info!("📊 Handling pg_stat_activity query with DataFusion");
+    debug!("📊 Handling pg_stat_activity query with DataFusion");
 
     // Get all active connections
     let connections = session_manager.get_connections().await;
