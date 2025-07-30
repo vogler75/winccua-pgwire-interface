@@ -92,14 +92,6 @@ impl AuthenticatedSession {
             }
         }
     }
-
-    #[allow(dead_code)]
-    pub fn is_expired(&self) -> bool {
-        // Parse the expires timestamp and check if it's past current time
-        // For now, we'll assume sessions don't expire during the connection
-        // In a production system, you'd want to parse the timestamp and check
-        false
-    }
 }
 
 #[derive(Debug)]
@@ -152,14 +144,7 @@ impl SessionManager {
     #[allow(dead_code)]
     pub async fn get_session(&self, session_id: &str) -> Option<AuthenticatedSession> {
         let sessions = self.sessions.read().await;
-        let session = sessions.get(session_id)?;
-        
-        if session.is_expired() {
-            warn!("Session {} for user {} has expired", session_id, session.username);
-            return None;
-        }
-        
-        Some(session.clone())
+        sessions.get(session_id).cloned()
     }
 
     #[allow(dead_code)]
@@ -176,23 +161,6 @@ impl SessionManager {
         }
     }
 
-    #[allow(dead_code)]
-    pub async fn cleanup_expired_sessions(&self) {
-        let mut sessions = self.sessions.write().await;
-        let mut expired_sessions = Vec::new();
-        
-        for (id, session) in sessions.iter() {
-            if session.is_expired() {
-                expired_sessions.push(id.clone());
-            }
-        }
-        
-        for id in expired_sessions {
-            if let Some(session) = sessions.remove(&id) {
-                warn!("Cleaned up expired session {} for user {}", id, session.username);
-            }
-        }
-    }
 
     #[allow(dead_code)]
     pub async fn session_count(&self) -> usize {
@@ -316,12 +284,30 @@ impl SessionManager {
         Ok(connection_id)
     }
     
-    /// Unregister a connection
+    /// Unregister a connection and remove the session if no other connections are using it
     pub async fn unregister_connection(&self, connection_id: u32) {
-        let mut connections = self.connections.write().await;
-        if let Some(conn) = connections.remove(&connection_id) {
-            info!("📊 Unregistered connection {} for user {:?} from {}", 
-                connection_id, conn.username, conn.client_addr);
+        let session_id_to_check = {
+            let mut connections = self.connections.write().await;
+            if let Some(conn) = connections.remove(&connection_id) {
+                info!("📊 Unregistered connection {} for user {:?} from {}", 
+                    connection_id, conn.username, conn.client_addr);
+                conn.session_id
+            } else {
+                None
+            }
+        };
+        
+        // Check if any other connections are using this session
+        if let Some(session_id) = session_id_to_check {
+            let connections = self.connections.read().await;
+            let session_still_in_use = connections.values()
+                .any(|conn| conn.session_id.as_ref() == Some(&session_id));
+            drop(connections);
+            
+            if !session_still_in_use {
+                // No other connections are using this session, remove it
+                self.remove_session(&session_id).await;
+            }
         }
     }
     
