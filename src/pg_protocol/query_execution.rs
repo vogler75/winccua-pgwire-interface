@@ -157,7 +157,7 @@ pub(super) async fn handle_simple_query_with_connection(
 
         // Check if this is a SET statement - if so, use QueryHandler for proper parsing
         if trimmed_query.starts_with("SET ") {
-            info!(
+            debug!(
                 "🔧 SET statement detected, routing to QueryHandler: {}",
                 query.trim()
             );
