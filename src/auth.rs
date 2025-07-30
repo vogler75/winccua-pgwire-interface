@@ -83,7 +83,7 @@ impl AuthenticatedSession {
             Ok(new_session) => {
                 self.token = new_session.token;
                 self.expires = new_session.expires;
-                info!("✅ Session {} extended successfully for user {}", self.session_id, self.username);
+                debug!("✅ Session {} extended successfully for user {}", self.session_id, self.username);
                 Ok(())
             }
             Err(e) => {
@@ -214,6 +214,8 @@ impl SessionManager {
         
         let handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(extension_interval_secs));
+            // Skip the first tick so we don't immediately extend newly created sessions
+            interval.tick().await;
             
             loop {
                 interval.tick().await;

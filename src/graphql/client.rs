@@ -1,7 +1,7 @@
 use super::types::*;
 use anyhow::{anyhow, Result};
 use reqwest::Client;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 #[derive(Debug)]
 pub struct GraphQLClient {
@@ -791,7 +791,6 @@ impl GraphQLClient {
             }
         }
 
-        info!("✅ Successfully extended session");
         Ok(session)
     }
 }

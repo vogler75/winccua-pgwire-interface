@@ -83,10 +83,6 @@ pub struct Args {
     #[arg(long)]
     pub debug: bool,
 
-    /// Use PostgreSQL wire protocol (default) instead of simple TCP protocol
-    #[arg(long, default_value_t = true)]
-    pub pgwire: bool,
-
     /// Enable TLS/SSL support
     #[arg(long)]
     pub tls_enabled: bool,
