@@ -102,6 +102,10 @@ pub struct Args {
     /// Require client certificates for authentication
     #[arg(long)]
     pub tls_require_client_cert: bool,
+
+    /// Session extension interval in seconds (default: 600 = 10 minutes)
+    #[arg(long, default_value_t = 600)]
+    pub session_extension_interval: u64,
 }
 
 #[tokio::main]
@@ -129,6 +133,7 @@ async fn main() -> Result<()> {
     info!("Starting WinCC UA PostgreSQL Wire Protocol Server");
     info!("Binding to: {}", args.bind_addr);
     info!("GraphQL URL: {}", graphql_url);
+    info!("Session extension interval: {} seconds", args.session_extension_interval);
 
     // Validate GraphQL connection
     info!("Validating GraphQL connection to: {}", graphql_url);
@@ -180,7 +185,7 @@ async fn main() -> Result<()> {
         info!("🐘 Starting PostgreSQL-compatible server (enhanced simple protocol)");
     }
     
-    let server = pg_protocol::PgProtocolServer::new(graphql_url, tls_config);
+    let server = pg_protocol::PgProtocolServer::new(graphql_url, tls_config, args.session_extension_interval);
     server.start(args.bind_addr).await?;
 
     Ok(())

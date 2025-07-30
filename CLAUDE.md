@@ -19,6 +19,9 @@ cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127
 # Run with debug logging
 RUST_LOG=debug cargo run -- --graphql-url http://your-wincc-server:4000/graphql --debug --bind-addr 127.0.0.1:5433
 
+# Run with custom session extension interval (e.g., 5 minutes = 300 seconds)
+cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 --session-extension-interval 300
+
 # Run with TLS encryption enabled
 cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
   --tls-enabled --tls-cert server.crt --tls-key server.key
@@ -102,7 +105,7 @@ The server acts as a translation layer with DataFusion integration:
 - **SQL parsing uses DataFusion's sqlparser** (same parser used for DataFusion execution)
 - All GraphQL communication goes through `src/graphql/client.rs`
 - DataFusion integration via `src/datafusion_handler.rs` for complex queries
-- **Session management with automatic extension** - Sessions are automatically extended every 10 minutes to prevent expiration
+- **Session management with automatic extension** - Sessions are automatically extended periodically to prevent expiration (configurable via --session-extension-interval, default 600 seconds)
 - Debug logging uses emoji indicators (🚀 startup, 📨 incoming, 📤 outgoing, etc.)
 - Supports Extended Query Protocol for prepared statements
 - Virtual tables defined in `create_table_function()` in `tables.rs`

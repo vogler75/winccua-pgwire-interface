@@ -71,9 +71,9 @@ pub struct PgProtocolServer {
 }
 
 impl PgProtocolServer {
-    pub fn new(graphql_url: String, tls_config: Option<TlsConfig>) -> Self {
+    pub fn new(graphql_url: String, tls_config: Option<TlsConfig>, session_extension_interval: u64) -> Self {
         Self {
-            session_manager: Arc::new(SessionManager::new(graphql_url)),
+            session_manager: Arc::new(SessionManager::with_extension_interval(graphql_url, session_extension_interval)),
             tls_config,
         }
     }

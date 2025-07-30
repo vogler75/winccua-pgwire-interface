@@ -62,14 +62,16 @@ pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, AuthenticatedSession>>>,
     graphql_url: String,
     extension_task_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+    extension_interval_secs: u64,
 }
 
 impl SessionManager {
-    pub fn new(graphql_url: String) -> Self {
+    pub fn with_extension_interval(graphql_url: String, extension_interval_secs: u64) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             graphql_url,
             extension_task_handle: Arc::new(RwLock::new(None)),
+            extension_interval_secs,
         }
     }
 
@@ -145,20 +147,21 @@ impl SessionManager {
         self.sessions.read().await.len()
     }
 
-    /// Start the background task that extends all active sessions every 10 minutes
+    /// Start the background task that extends all active sessions periodically
     async fn start_session_extension_task(&self) {
         let sessions_clone = Arc::clone(&self.sessions);
         let mut handle_guard = self.extension_task_handle.write().await;
+        let extension_interval_secs = self.extension_interval_secs;
         
         // Don't start a new task if one is already running
         if handle_guard.is_some() {
             return;
         }
         
-        info!("🚀 Starting session extension background task (10-minute intervals)");
+        info!("🚀 Starting session extension background task ({}-second intervals)", extension_interval_secs);
         
         let handle = tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(10 * 60)); // 10 minutes
+            let mut interval = interval(Duration::from_secs(extension_interval_secs));
             
             loop {
                 interval.tick().await;
