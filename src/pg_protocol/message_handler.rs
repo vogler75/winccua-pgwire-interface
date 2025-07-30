@@ -94,7 +94,11 @@ async fn handle_simple_query_message(
         .map_err(|_| anyhow!("Invalid UTF-8 in query"))?
         .trim_end_matches('\0');
 
-    info!("📥 SQL Query: {}", query_str.trim().replace('\n', " ").replace('\r', ""));
+    if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
+        info!("📥 SQL Query: {}", query_str.trim().replace('\n', " ").replace('\r', ""));
+    } else {
+        debug!("📥 SQL Query: {}", query_str.trim().replace('\n', " ").replace('\r', ""));
+    }
 
     // Start query tracking with timing
     let query_start = std::time::Instant::now();
@@ -111,7 +115,11 @@ async fn handle_simple_query_message(
                 // End query tracking - overall time will be calculated automatically
                 session_manager.end_query(conn_id).await;
                 
-                debug!("🕐 Query completed in {}ms for connection {}", overall_time_ms, conn_id);
+                if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
+                    info!("🕐 Query completed in {}ms for connection {}", overall_time_ms, conn_id);
+                } else {
+                    debug!("🕐 Query completed in {}ms for connection {}", overall_time_ms, conn_id);
+                }
             }
             Ok(response)
         },

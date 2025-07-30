@@ -238,13 +238,6 @@ impl QueryHandler {
         let sql_result = match SqlHandler::parse_query(sql) {
             Ok(result) => result,
             Err(e) => {
-                // Check if this is an unknown table error and log the SQL statement
-                let error_msg = e.to_string();
-                if error_msg.starts_with("Unknown table:") {
-                    warn!("❌ Unknown table in SQL query: {}", sql.trim());
-                    warn!("❌ {}", error_msg);
-                    warn!("📋 Available tables: tagvalues, loggedtagvalues, activealarms, loggedalarms, taglist");
-                }
                 return Err(e);
             }
         };
@@ -311,10 +304,17 @@ impl QueryHandler {
                 final_result.timings.datafusion_time_ms,
                 Some(overall_time_ms),
             ).await;
-            info!("🕐 Query completed in {}ms for connection {} (GraphQL: {:?}ms, DataFusion: {:?}ms)", 
-                overall_time_ms, conn_id, 
-                final_result.timings.graphql_time_ms,
-                final_result.timings.datafusion_time_ms);
+            if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
+                info!("🕐 Query completed in {}ms for connection {} (GraphQL: {:?}ms, DataFusion: {:?}ms)", 
+                    overall_time_ms, conn_id, 
+                    final_result.timings.graphql_time_ms,
+                    final_result.timings.datafusion_time_ms);
+            } else {
+                debug!("🕐 Query completed in {}ms for connection {} (GraphQL: {:?}ms, DataFusion: {:?}ms)", 
+                    overall_time_ms, conn_id, 
+                    final_result.timings.graphql_time_ms,
+                    final_result.timings.datafusion_time_ms);
+            }
         } else {
             debug!("🔍 No connection_id provided, timing data not saved to session manager");
         }
@@ -551,7 +551,7 @@ impl QueryHandler {
         _query_info: &QueryInfo, 
         session: &AuthenticatedSession,
     ) -> Result<QueryResult> {
-        info!("🔍 Executing FROM-less query: {}", sql.trim());
+        debug!("🔍 Executing FROM-less query: {}", sql.trim());
         
         // For SELECT 1 queries, extend the session as a keep-alive
         if sql.trim().to_uppercase().contains("SELECT 1") {

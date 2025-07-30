@@ -2,10 +2,14 @@ use anyhow::Result;
 use clap::Parser;
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{info, warn};
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::registry::LookupSpan;
+
+// Global flag for SQL logging
+pub static LOG_SQL: AtomicBool = AtomicBool::new(false);
 
 mod auth;
 mod datafusion_handler;
@@ -106,6 +110,10 @@ pub struct Args {
     /// Session extension interval in seconds (default: 600 = 10 minutes)
     #[arg(long, default_value_t = 600)]
     pub session_extension_interval: u64,
+
+    /// Enable SQL query logging at INFO level (default: logs at DEBUG level)
+    #[arg(long)]
+    pub log_sql: bool,
 }
 
 #[tokio::main]
@@ -134,6 +142,14 @@ async fn main() -> Result<()> {
     info!("Binding to: {}", args.bind_addr);
     info!("GraphQL URL: {}", graphql_url);
     info!("Session extension interval: {} seconds", args.session_extension_interval);
+    
+    // Set global SQL logging flag
+    LOG_SQL.store(args.log_sql, Ordering::Relaxed);
+    if args.log_sql {
+        info!("SQL query logging: ENABLED (INFO level)");
+    } else {
+        info!("SQL query logging: DEBUG level only");
+    }
 
     // Validate GraphQL connection
     info!("Validating GraphQL connection to: {}", graphql_url);

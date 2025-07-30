@@ -663,7 +663,7 @@ where
                             }
                             return Ok(());
                         } else {
-                            error!("❌ Message processing error for {}: {}", peer_addr_str, e);
+                            error!("❌ Error for {}: {}", peer_addr_str, e);
                             let mut error_response = create_postgres_error_response(
                                 "42000",
                                 &format!("Query failed: {}", e),
