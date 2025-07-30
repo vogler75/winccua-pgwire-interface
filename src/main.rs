@@ -180,9 +180,9 @@ async fn main() -> Result<()> {
     // For now, always use the simple server with improved PostgreSQL compatibility
     // The pgwire library API is too complex and has changed significantly
     if tls_config.is_some() {
-        info!("🐘🔒 Starting PostgreSQL-compatible server with TLS support");
+        info!("🐘 Starting PostgreSQL-compatible server with TLS support 🔒");
     } else {
-        info!("🐘 Starting PostgreSQL-compatible server (enhanced simple protocol)");
+        info!("🐘 Starting PostgreSQL-compatible server");
     }
     
     let server = pg_protocol::PgProtocolServer::new(graphql_url, tls_config, args.session_extension_interval);
