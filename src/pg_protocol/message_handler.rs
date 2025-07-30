@@ -22,6 +22,7 @@ pub(super) async fn handle_postgres_message(
     session: &crate::auth::AuthenticatedSession,
     session_manager: Arc<SessionManager>,
     connection_id: Option<u32>,
+    quiet_connections: bool,
 ) -> Result<Vec<u8>> {
     if data.len() < 5 {
         return Err(anyhow!("Message too short"));
@@ -56,7 +57,7 @@ pub(super) async fn handle_postgres_message(
         b'D' => handle_describe_message(payload, connection_state, session, session_manager.clone(), connection_id).await,
         b'C' => handle_close_message(payload, connection_state).await,
         b'S' => handle_sync_message().await,
-        b'X' => handle_terminate_message().await,
+        b'X' => handle_terminate_message(quiet_connections).await,
         _ => {
             warn!(
                 "❓ Unsupported PostgreSQL message type: '{}' (0x{:02X})",
@@ -560,8 +561,10 @@ async fn handle_sync_message() -> Result<Vec<u8>> {
     Ok(create_ready_for_query_response())
 }
 
-async fn handle_terminate_message() -> Result<Vec<u8>> {
-    info!("🔚 Terminate: Client requested graceful connection termination");
+async fn handle_terminate_message(quiet_connections: bool) -> Result<Vec<u8>> {
+    if !quiet_connections {
+        info!("🔚 Terminate: Client requested graceful connection termination");
+    }
     // Return a special marker that signals the connection should be closed
     // We'll use an error with a specific message that the caller can check
     Err(anyhow!("TERMINATE_CONNECTION"))

@@ -17,8 +17,9 @@ pub(super) async fn handle_postgres_startup(
     session_manager: Arc<SessionManager>,
     data: &[u8],
     peer_addr: SocketAddr,
+    quiet_connections: bool,
 ) -> Result<()> {
-    handle_postgres_startup_stream(socket, session_manager, data, Some(peer_addr)).await
+    handle_postgres_startup_stream(socket, session_manager, data, Some(peer_addr), quiet_connections).await
 }
 
 pub(super) async fn handle_postgres_startup_stream<T>(
@@ -26,12 +27,15 @@ pub(super) async fn handle_postgres_startup_stream<T>(
     session_manager: Arc<SessionManager>,
     data: &[u8],
     socket_addr: Option<SocketAddr>,
+    quiet_connections: bool,
 ) -> Result<()> 
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
     let peer_addr_str = socket_addr.map(|a| a.to_string()).unwrap_or_else(|| "client".to_string());
-    info!("🐘 Handling PostgreSQL startup from {}", peer_addr_str);
+    if !quiet_connections {
+        info!("🐘 Handling PostgreSQL startup from {}", peer_addr_str);
+    }
 
     // Initialize connection_id at function level
     let mut connection_id: Option<u32> = None;
@@ -62,16 +66,20 @@ where
     let version =
         u32::from_be_bytes([complete_data[4], complete_data[5], complete_data[6], complete_data[7]]);
 
-    info!(
-        "📋 Startup message: length={}, version={} (0x{:08x})",
-        length, version, version
-    );
+    if !quiet_connections {
+        info!(
+            "📋 Startup message: length={}, version={} (0x{:08x})",
+            length, version, version
+        );
+    }
 
     // Dump full startup message for debugging
-    info!("🔍 Full startup message dump from {}:", peer_addr_str);
-    info!("   📏 Total length: {} bytes", complete_data.len());
-    info!("   📊 Message length field: {} bytes", length);
-    info!("   🔢 Protocol version: {} (0x{:08x})", version, version);
+    if !quiet_connections {
+        info!("🔍 Full startup message dump from {}:", peer_addr_str);
+        info!("   📏 Total length: {} bytes", complete_data.len());
+        info!("   📊 Message length field: {} bytes", length);
+        info!("   🔢 Protocol version: {} (0x{:08x})", version, version);
+    }
 
     // Hex dump of the entire startup message
     let hex_dump = hex::encode(&complete_data);
@@ -100,19 +108,21 @@ where
         if complete_data.len() > 8 {
             let params_data = &complete_data[8..];
             let params = parse_startup_parameters(params_data);
-            info!("📋 Client connection parameters from {}:", peer_addr_str);
-            for (key, value) in &params {
-                match key.as_str() {
-                    "user" => info!("   👤 User: {}", value),
-                    "database" => info!("   🗄️  Database: {}", value),
-                    "application_name" => info!("   📱 Application: {}", value),
-                    "client_encoding" => info!("   🔤 Encoding: {}", value),
-                    "DateStyle" => info!("   📅 Date Style: {}", value),
-                    "TimeZone" => info!("   🌍 Timezone: {}", value),
-                    "extra_float_digits" => info!("   🔢 Float Digits: {}", value),
-                    "search_path" => info!("   🔍 Search Path: {}", value),
-                    "sslmode" => info!("   🔒 SSL Mode: {}", value),
-                    _ => info!("   📌 {}: {}", key, value),
+            if !quiet_connections {
+                info!("📋 Client connection parameters from {}:", peer_addr_str);
+                for (key, value) in &params {
+                    match key.as_str() {
+                        "user" => info!("   👤 User: {}", value),
+                        "database" => info!("   🗄️  Database: {}", value),
+                        "application_name" => info!("   📱 Application: {}", value),
+                        "client_encoding" => info!("   🔤 Encoding: {}", value),
+                        "DateStyle" => info!("   📅 Date Style: {}", value),
+                        "TimeZone" => info!("   🌍 Timezone: {}", value),
+                        "extra_float_digits" => info!("   🔢 Float Digits: {}", value),
+                        "search_path" => info!("   🔍 Search Path: {}", value),
+                        "sslmode" => info!("   🔒 SSL Mode: {}", value),
+                        _ => info!("   📌 {}: {}", key, value),
+                    }
                 }
             }
             if params.is_empty() {
@@ -121,7 +131,7 @@ where
                     "🔍 Raw parameter data: {:?}",
                     String::from_utf8_lossy(params_data)
                 );
-            } else {
+            } else if !quiet_connections {
                 info!("📊 Total parameters received: {}", params.len());
             }
         }
@@ -164,10 +174,12 @@ where
             ("unknown".to_string(), "unknown".to_string())
         };
 
-        info!(
-            "🔐 PostgreSQL client {} requesting authentication for user: {}",
-            peer_addr_str, username
-        );
+        if !quiet_connections {
+            info!(
+                "🔐 PostgreSQL client {} requesting authentication for user: {}",
+                peer_addr_str, username
+            );
+        }
 
 
         // Normal authentication flow
@@ -179,18 +191,22 @@ where
         let prefer_scram = false; // Use MD5 for better compatibility with Python clients
 
         let (auth_request, auth_context) = if prefer_scram {
-            info!("🔐 Offering SCRAM-SHA-256 authentication (preferred method)");
-            if username == "unknown" {
-                info!("   💡 Username will be provided in SASL Initial Response");
-            } else {
-                info!("   👤 Startup username: {}", username);
+            if !quiet_connections {
+                info!("🔐 Offering SCRAM-SHA-256 authentication (preferred method)");
+                if username == "unknown" {
+                    info!("   💡 Username will be provided in SASL Initial Response");
+                } else {
+                    info!("   👤 Startup username: {}", username);
+                }
             }
             (
                 create_postgres_scram_sha256_request(),
                 AuthContext::Scram,
             )
         } else {
-            info!("🔐 Sending MD5 authentication request");
+            if !quiet_connections {
+                info!("🔐 Sending MD5 authentication request");
+            }
             let (auth_request, salt) = create_postgres_md5_request();
             debug!(
                 "🧂 Generated salt for MD5 auth: {:02x}{:02x}{:02x}{:02x}",
@@ -215,7 +231,9 @@ where
         let mut auth_buffer = [0; 1024];
         let auth_n = socket.read(&mut auth_buffer).await?;
         if auth_n == 0 {
-            warn!("⚠️  Client {} disconnected during authentication", peer_addr_str);
+            if !quiet_connections {
+                warn!("⚠️  Client {} disconnected during authentication", peer_addr_str);
+            }
             return Ok(());
         }
 
@@ -244,10 +262,12 @@ where
                                 let mut password_buffer = [0; 1024];
                                 let password_n = socket.read(&mut password_buffer).await?;
                                 if password_n == 0 {
-                                    warn!(
-                                        "⚠️  Client {} disconnected during MD5 fallback",
-                                        peer_addr_str
-                                    );
+                                    if !quiet_connections {
+                                        warn!(
+                                            "⚠️  Client {} disconnected during MD5 fallback",
+                                            peer_addr_str
+                                        );
+                                    }
                                     return Ok(());
                                 }
 
@@ -261,7 +281,9 @@ where
                                 (username.clone(), password.unwrap())
                             } else {
                                 // Implement SCRAM-SHA-256 protocol
-                                info!("🔐 Starting SCRAM-SHA-256 authentication for client {}", peer_addr_str);
+                                if !quiet_connections {
+                                    info!("🔐 Starting SCRAM-SHA-256 authentication for client {}", peer_addr_str);
+                                }
                                 debug!("📨 SCRAM Initial Response: {}", initial_response);
 
                                 // Parse client-first message
@@ -304,10 +326,12 @@ where
                                 let mut client_final_buffer = [0; 1024];
                                 let client_final_n = socket.read(&mut client_final_buffer).await?;
                                 if client_final_n == 0 {
-                                    warn!(
-                                        "⚠️  Client {} disconnected during SCRAM client-final",
-                                        peer_addr_str
-                                    );
+                                    if !quiet_connections {
+                                        warn!(
+                                            "⚠️  Client {} disconnected during SCRAM client-final",
+                                            peer_addr_str
+                                        );
+                                    }
                                     return Ok(());
                                 }
 
@@ -371,7 +395,9 @@ where
                                     known_password,
                                 ) {
                                     Ok(server_final) => {
-                                        info!("✅ SCRAM-SHA-256 authentication successful for user '{}'", scram_username);
+                                        if !quiet_connections {
+                                            info!("✅ SCRAM-SHA-256 authentication successful for user '{}'", scram_username);
+                                        }
                                         debug!("📨 Sending SCRAM server-final: {}", server_final);
 
                                         // Send SASL Final
@@ -452,14 +478,18 @@ where
             }
         };
 
-        info!(
-            "🔑 Authenticating user '{}' from {} via GraphQL",
-            username_final, peer_addr_str
-        );
+        if !quiet_connections {
+            info!(
+                "🔑 Authenticating user '{}' from {} via GraphQL",
+                username_final, peer_addr_str
+            );
+        }
 
         // Handle MD5 authentication
         let (is_md5_valid, actual_password) = if password_final.starts_with("md5") {
-            info!("🔐 Received MD5 password response from {}", peer_addr_str);
+            if !quiet_connections {
+                info!("🔐 Received MD5 password response from {}", peer_addr_str);
+            }
             debug!("🔍 MD5 response: {}", password_final);
 
             // For MD5 verification, we need to know the original password
@@ -493,25 +523,31 @@ where
                             salt,
                             &password_final,
                         );
-                        info!(
-                            "🔍 MD5 verification for user '{}': {}",
-                            username_final,
-                            if valid { "✅ PASSED" } else { "❌ FAILED" }
-                        );
+                        if !quiet_connections {
+                            info!(
+                                "🔍 MD5 verification for user '{}': {}",
+                                username_final,
+                                if valid { "✅ PASSED" } else { "❌ FAILED" }
+                            );
+                        }
                         valid
                     }
                     AuthContext::Scram => {
-                        info!(
-                            "🔍 SCRAM-SHA-256 verification for user '{}' (not fully implemented)",
-                            username_final
-                        );
+                        if !quiet_connections {
+                            info!(
+                                "🔍 SCRAM-SHA-256 verification for user '{}' (not fully implemented)",
+                                username_final
+                            );
+                        }
                         true // For now, accept SCRAM attempts
                     }
                 };
                 (is_valid, known_password.to_string())
             }
         } else {
-            info!("🔐 Received cleartext password from {}", peer_addr_str);
+            if !quiet_connections {
+                info!("🔐 Received cleartext password from {}", peer_addr_str);
+            }
             (true, password_final)
         };
 
@@ -530,10 +566,12 @@ where
         let authenticated_session =
             match session_manager.authenticate(&username_final, &actual_password).await {
                 Ok(session) => {
-                    info!(
-                        "✅ Authentication successful for user '{}' from {}",
-                        username_final, peer_addr_str
-                    );
+                    if !quiet_connections {
+                        info!(
+                            "✅ Authentication successful for user '{}' from {}",
+                            username_final, peer_addr_str
+                        );
+                    }
 
                     // Send authentication OK response
                     let auth_ok_response = create_postgres_auth_ok_response();
@@ -577,7 +615,9 @@ where
         };
 
         // Main query processing loop
-        info!("🔄 Starting PostgreSQL query loop for {}", peer_addr_str);
+        if !quiet_connections {
+            info!("🔄 Starting PostgreSQL query loop for {}", peer_addr_str);
+        }
         let mut buffer = vec![0; 4096];
 
         loop {
@@ -585,7 +625,9 @@ where
 
             let n = socket.read(&mut buffer).await?;
             if n == 0 {
-                info!("🔌 PostgreSQL connection closed by client {}", peer_addr_str);
+                if !quiet_connections {
+                    info!("🔌 PostgreSQL connection closed by client {}", peer_addr_str);
+                }
                 break;
             }
 
@@ -642,6 +684,7 @@ where
                     &authenticated_session,
                     session_manager.clone(),
                     connection_id,
+                    quiet_connections,
                 )
                 .await
                 {
@@ -656,7 +699,9 @@ where
                     }
                     Err(e) => {
                         if e.to_string() == "TERMINATE_CONNECTION" {
-                            info!("👋 Client {} requested connection termination", peer_addr_str);
+                            if !quiet_connections {
+                                info!("👋 Client {} requested connection termination", peer_addr_str);
+                            }
                             // Unregister the connection before returning
                             if let Some(conn_id) = connection_id {
                                 session_manager.unregister_connection(conn_id).await;
@@ -708,7 +753,9 @@ where
         session_manager.unregister_connection(conn_id).await;
     }
 
-    info!("🔌 PostgreSQL connection attempt from {} handled", peer_addr_str);
+    if !quiet_connections {
+        info!("🔌 PostgreSQL connection attempt from {} handled", peer_addr_str);
+    }
     Ok(())
 }
 

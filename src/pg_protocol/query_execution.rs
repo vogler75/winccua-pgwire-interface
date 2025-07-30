@@ -65,7 +65,7 @@ pub(super) async fn handle_extended_query_with_connection(
     // Handle empty queries (just whitespace and/or semicolons)
     let cleaned_query = query.trim().trim_end_matches(';').trim();
     if cleaned_query.is_empty() {
-        info!("⚪ Empty extended query received, returning CommandComplete");
+        debug!("⚪ Empty extended query received, returning CommandComplete");
         return Ok(create_command_complete_wire_response(""));
     }
 
@@ -73,7 +73,7 @@ pub(super) async fn handle_extended_query_with_connection(
 
     // Handle transaction control statements that can be safely acknowledged
     if is_transaction_control_statement(&trimmed_query) {
-        info!(
+        debug!(
             "📋 Transaction control statement (acknowledged): {}",
             query.trim()
         );
@@ -84,11 +84,11 @@ pub(super) async fn handle_extended_query_with_connection(
 
     // Handle other utility statements
     if is_utility_statement(&trimmed_query) {
-        info!("🔧 Utility statement: {}", query.trim());
+        debug!("🔧 Utility statement: {}", query.trim());
 
         // Check if this is a SET statement - if so, use QueryHandler for proper parsing
         if trimmed_query.starts_with("SET ") {
-            info!(
+            debug!(
                 "🔧 SET statement detected, routing to QueryHandler: {}",
                 query.trim()
             );
@@ -142,7 +142,7 @@ pub(super) async fn handle_simple_query_with_connection(
 
     // Handle transaction control statements that can be safely acknowledged
     if is_transaction_control_statement(&trimmed_query) {
-        info!(
+        debug!(
             "📋 Transaction control statement (acknowledged): {}",
             query.trim()
         );
@@ -153,7 +153,7 @@ pub(super) async fn handle_simple_query_with_connection(
 
     // Handle other utility statements
     if is_utility_statement(&trimmed_query) {
-        info!("🔧 Utility statement: {}", query.trim());
+        debug!("🔧 Utility statement: {}", query.trim());
 
         // Check if this is a SET statement - if so, use QueryHandler for proper parsing
         if trimmed_query.starts_with("SET ") {

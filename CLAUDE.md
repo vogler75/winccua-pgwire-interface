@@ -30,6 +30,10 @@ cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127
 cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
   --tls-enabled --tls-cert server.crt --tls-key server.key \
   --tls-ca-cert ca.crt --tls-require-client-cert
+
+# Run with quiet connection logging (suppress connection/auth messages)
+cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
+  --quiet-connections
 ```
 
 ### Testing

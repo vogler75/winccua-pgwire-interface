@@ -110,6 +110,10 @@ pub struct Args {
     /// Enable SQL query logging at INFO level (default: logs at DEBUG level)
     #[arg(long)]
     pub log_sql: bool,
+
+    /// Suppress connection and authentication log messages
+    #[arg(long)]
+    pub quiet_connections: bool,
 }
 
 #[tokio::main]
@@ -197,7 +201,8 @@ async fn main() -> Result<()> {
         info!("🐘 Starting PostgreSQL-compatible server");
     }
     
-    let server = pg_protocol::PgProtocolServer::new(graphql_url, tls_config, args.session_extension_interval);
+    let server = pg_protocol::PgProtocolServer::new(graphql_url, tls_config, args.session_extension_interval)
+        .with_quiet_connections(args.quiet_connections);
     server.start(args.bind_addr).await?;
 
     Ok(())

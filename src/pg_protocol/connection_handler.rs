@@ -14,9 +14,12 @@ pub(super) async fn handle_connection(
     session_manager: Arc<SessionManager>,
     client_addr: SocketAddr,
     tls_acceptor: Option<TlsAcceptor>,
+    quiet_connections: bool,
 ) -> Result<()> {
     let peer_addr = client_addr;
-    info!("🔌 New connection established from {}", peer_addr);
+    if !quiet_connections {
+        info!("🔌 New connection established from {}", peer_addr);
+    }
 
     // Read first few bytes to see what kind of connection this is
     let mut peek_buffer = [0; 32];
@@ -36,10 +39,14 @@ pub(super) async fn handle_connection(
 
     // Check if this is an SSL request first
     if n >= 8 && is_ssl_request(&peek_buffer[..n]) {
-        info!("🔒 SSL connection request detected from {}!", peer_addr);
+        if !quiet_connections {
+            info!("🔒 SSL connection request detected from {}!", peer_addr);
+        }
         
         if let Some(acceptor) = tls_acceptor {
-            info!("   📌 SSL Status: Supported by server - upgrading to TLS");
+            if !quiet_connections {
+                info!("   📌 SSL Status: Supported by server - upgrading to TLS");
+            }
             
             // Send SSL supported response ('S')
             let ssl_response = b"S";
@@ -51,10 +58,14 @@ pub(super) async fn handle_connection(
             debug!("✅ Sent SSL acceptance ('S') to {}", peer_addr);
             
             // Perform TLS handshake
-            info!("🤝 Performing TLS handshake with {}", peer_addr);
+            if !quiet_connections {
+                info!("🤝 Performing TLS handshake with {}", peer_addr);
+            }
             let tls_stream = match acceptor.accept(socket).await {
                 Ok(stream) => {
-                    info!("✅ TLS handshake successful with {}", peer_addr);
+                    if !quiet_connections {
+                        info!("✅ TLS handshake successful with {}", peer_addr);
+                    }
                     stream
                 }
                 Err(e) => {
@@ -64,11 +75,13 @@ pub(super) async fn handle_connection(
             };
             
             // Now handle the startup message over the encrypted connection
-            return handle_postgres_startup_tls(tls_stream, session_manager, peer_addr).await;
+            return handle_postgres_startup_tls(tls_stream, session_manager, peer_addr, quiet_connections).await;
             
         } else {
-            info!("   📌 SSL Status: Not supported by server (TLS not configured)");
-            info!("   💡 Client should fall back to unencrypted connection");
+            if !quiet_connections {
+                info!("   📌 SSL Status: Not supported by server (TLS not configured)");
+                info!("   💡 Client should fall back to unencrypted connection");
+            }
 
             // Send SSL not supported response ('N')
             let ssl_response = b"N";
@@ -107,16 +120,19 @@ pub(super) async fn handle_connection(
                 session_manager,
                 &startup_buffer[..startup_n],
                 peer_addr,
+                quiet_connections,
             )
             .await;
         }
     }
     // Check if this looks like PostgreSQL wire protocol (non-SSL)
     else if n >= 8 && is_postgres_wire_protocol(&peek_buffer[..n]) {
-        warn!("🐘 PostgreSQL wire protocol detected from {}!", peer_addr);
+        if !quiet_connections {
+            warn!("🐘 PostgreSQL wire protocol detected from {}!", peer_addr);
+        }
 
         // For now, attempt to handle it as PostgreSQL startup
-        return handle_postgres_startup(socket, session_manager, &peek_buffer[..n], peer_addr)
+        return handle_postgres_startup(socket, session_manager, &peek_buffer[..n], peer_addr, quiet_connections)
             .await;
     }
 
@@ -320,11 +336,14 @@ async fn handle_postgres_startup_tls<T>(
     mut stream: T,
     session_manager: Arc<SessionManager>,
     peer_addr: SocketAddr,
+    quiet_connections: bool,
 ) -> Result<()> 
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
-    info!("🔒 Handling encrypted PostgreSQL startup for {}", peer_addr);
+    if !quiet_connections {
+        info!("🔒 Handling encrypted PostgreSQL startup for {}", peer_addr);
+    }
 
     // Read the startup message over TLS
     let mut startup_buffer = [0; 1024];
@@ -344,6 +363,7 @@ where
         session_manager,
         &startup_buffer[..startup_n],
         Some(peer_addr),
+        quiet_connections,
     )
     .await;
 }

@@ -68,6 +68,7 @@ pub(super) struct ScramSha256Context {
 pub struct PgProtocolServer {
     session_manager: Arc<SessionManager>,
     tls_config: Option<TlsConfig>,
+    quiet_connections: bool,
 }
 
 impl PgProtocolServer {
@@ -75,7 +76,21 @@ impl PgProtocolServer {
         Self {
             session_manager: Arc::new(SessionManager::with_extension_interval(graphql_url, session_extension_interval)),
             tls_config,
+            quiet_connections: false,
         }
+    }
+
+    pub fn with_quiet_connections(mut self, quiet: bool) -> Self {
+        self.quiet_connections = quiet;
+        // Also update the session manager
+        let session_manager = Arc::new(
+            SessionManager::with_extension_interval(
+                self.session_manager.graphql_url().to_string(), 
+                self.session_manager.extension_interval_secs()
+            ).with_quiet_connections(quiet)
+        );
+        self.session_manager = session_manager;
+        self
     }
 
     pub async fn start(&self, addr: SocketAddr) -> Result<()> {
@@ -94,10 +109,13 @@ impl PgProtocolServer {
             debug!("🎧 Waiting for new connections...");
 
             let (socket, client_addr) = listener.accept().await?;
-            info!("🌟 Accepted new connection from {}", client_addr);
+            if !self.quiet_connections {
+                info!("🌟 Accepted new connection from {}", client_addr);
+            }
 
             let session_manager = self.session_manager.clone();
             let tls_acceptor = tls_acceptor.clone();
+            let quiet_connections = self.quiet_connections;
             
             tokio::spawn(async move {
                 debug!("🚀 Starting connection handler for {}", client_addr);
@@ -106,10 +124,27 @@ impl PgProtocolServer {
                     socket, 
                     session_manager.clone(), 
                     client_addr,
-                    tls_acceptor
+                    tls_acceptor,
+                    quiet_connections
                 ).await
                 {
-                    error!("💥 Error handling connection from {}: {}", client_addr, e);
+                    // Check if this is a connection error that might leave orphaned sessions
+                    let error_str = e.to_string();
+                    if error_str.contains("close_notify") || 
+                       error_str.contains("Connection reset by peer") ||
+                       error_str.contains("Broken pipe") ||
+                       error_str.contains("peer closed connection") ||
+                       error_str.contains("Connection closed") ||
+                       error_str.contains("UnexpectedEof") ||
+                       error_str.contains("connection was closed") {
+                        if !quiet_connections {
+                            debug!("🔌 Client {} disconnected abruptly ({}), performing cleanup", client_addr, error_str);
+                        }
+                        // Clean up any orphaned connections for this client address
+                        session_manager.cleanup_connections_by_address(client_addr).await;
+                    } else {
+                        error!("💥 Error handling connection from {}: {}", client_addr, e);
+                    }
                 } else {
                     debug!(
                         "✅ Connection handler completed successfully for {}",
@@ -117,7 +152,9 @@ impl PgProtocolServer {
                     );
                 }
 
-                info!("👋 Connection from {} closed", client_addr);
+                if !quiet_connections {
+                    info!("👋 Connection from {} closed", client_addr);
+                }
             });
         }
     }

@@ -8,10 +8,12 @@ import psycopg2
 import time
 import sys
 import argparse
+import random
+import socket
 from datetime import datetime
 
 def test_connection_loop(host='localhost', port=5432, user='username1', password='password1', 
-                        database='winccua', delay=1.0, verbose=False):
+                        database='winccua', delay=1.0, verbose=False, kill_chance=0.0):
     """
     Continuously connect and disconnect from the PostgreSQL server.
     
@@ -23,6 +25,7 @@ def test_connection_loop(host='localhost', port=5432, user='username1', password
         database: Database name
         delay: Delay between connections in seconds
         verbose: Print detailed connection info
+        kill_chance: Probability (0.0-1.0) of abruptly closing connections
     """
     connection_count = 0
     error_count = 0
@@ -54,17 +57,34 @@ def test_connection_loop(host='localhost', port=5432, user='username1', password
                           f"Connection #{connection_count} established in {connect_time:.3f}s")
                 
                 # Optionally execute a simple query
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                result = cursor.fetchone()
+                #cursor = conn.cursor()
+                #cursor.execute("SELECT 1")
+                #result = cursor.fetchone()
                 
-                if verbose and result:
+                #if verbose and result:
                     print(f"  Query result: {result[0]}")
                 
-                cursor.close()
+                #cursor.close()
+
+                # Wait before next connection
+                time.sleep(delay)
+
                 
-                # Close the connection
-                conn.close()
+                # Simulate abrupt disconnection some percentage of the time
+                if kill_chance > 0 and random.random() < kill_chance:
+                    if verbose:
+                        print(f"  Simulating abrupt disconnection (kill -9)")
+                    # Abruptly close the underlying socket to simulate SIGKILL
+                    try:
+                        conn.get_backend_pid()  # This forces the connection to be active
+                        # Get the underlying socket and close it without proper shutdown
+                        sock = conn.get_dsn_parameters()
+                        conn.close()  # This will cause an abrupt close
+                    except:
+                        pass  # Connection might already be closed
+                else:
+                    # Normal graceful close
+                    conn.close()
                 
                 if connection_count % 10 == 0 and not verbose:
                     print(f"Completed {connection_count} connections (errors: {error_count})")
@@ -78,10 +98,7 @@ def test_connection_loop(host='localhost', port=5432, user='username1', password
                 error_count += 1
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
                       f"Unexpected error #{error_count}: {e}")
-            
-            # Wait before next connection
-            time.sleep(delay)
-            
+                        
     except KeyboardInterrupt:
         print(f"\n\nTest completed:")
         print(f"  Total connections: {connection_count}")
@@ -99,6 +116,8 @@ def main():
                         help='Delay between connections in seconds (default: 1.0)')
     parser.add_argument('--verbose', '-v', action='store_true', 
                         help='Print detailed connection information')
+    parser.add_argument('--kill-chance', type=float, default=0.0, metavar='PROB',
+                        help='Probability (0.0-1.0) of abruptly closing connections to test cleanup (default: 0.0)')
     
     args = parser.parse_args()
     
@@ -109,7 +128,8 @@ def main():
         password=args.password,
         database=args.database,
         delay=args.delay,
-        verbose=args.verbose
+        verbose=args.verbose,
+        kill_chance=args.kill_chance
     )
 
 if __name__ == '__main__':

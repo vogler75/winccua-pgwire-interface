@@ -101,6 +101,7 @@ pub struct SessionManager {
     graphql_url: String,
     extension_task_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     extension_interval_secs: u64,
+    quiet_connections: bool,
 }
 
 impl SessionManager {
@@ -116,7 +117,21 @@ impl SessionManager {
             graphql_url,
             extension_task_handle: Arc::new(RwLock::new(None)),
             extension_interval_secs,
+            quiet_connections: false,
         }
+    }
+
+    pub fn with_quiet_connections(mut self, quiet: bool) -> Self {
+        self.quiet_connections = quiet;
+        self
+    }
+
+    pub fn graphql_url(&self) -> &str {
+        &self.graphql_url
+    }
+
+    pub fn extension_interval_secs(&self) -> u64 {
+        self.extension_interval_secs
     }
 
     pub async fn authenticate(&self, username: &str, password: &str) -> Result<AuthenticatedSession> {
@@ -151,7 +166,9 @@ impl SessionManager {
     pub async fn remove_session(&self, session_id: &str) {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.remove(session_id) {
-            info!("Removed session {} for user {}", session_id, session.username);
+            if !self.quiet_connections {
+                info!("Removed session {} for user {}", session_id, session.username);
+            }
         }
         
         // Stop the extension task if no sessions remain
@@ -172,13 +189,16 @@ impl SessionManager {
         let sessions_clone = Arc::clone(&self.sessions);
         let mut handle_guard = self.extension_task_handle.write().await;
         let extension_interval_secs = self.extension_interval_secs;
+        let quiet_connections = self.quiet_connections;
         
         // Don't start a new task if one is already running
         if handle_guard.is_some() {
             return;
         }
         
-        info!("🚀 Starting session extension background task ({}-second intervals)", extension_interval_secs);
+        if !quiet_connections {
+            info!("🚀 Starting session extension background task ({}-second intervals)", extension_interval_secs);
+        }
         
         let handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(extension_interval_secs));
@@ -201,7 +221,9 @@ impl SessionManager {
                     break; // Exit the loop if no sessions remain
                 }
                 
-                info!("🔄 Extending {} active session(s)", sessions_to_extend.len());
+                if !quiet_connections {
+                    info!("🔄 Extending {} active session(s)", sessions_to_extend.len());
+                }
                 
                 // Extend each session
                 for mut session in sessions_to_extend {
@@ -223,12 +245,12 @@ impl SessionManager {
                 // Check if we still have sessions after extension attempts
                 let remaining_sessions = sessions_clone.read().await.len();
                 if remaining_sessions == 0 {
-                    info!("📝 No sessions remaining after extension attempts. Stopping extension task.");
+                    debug!("📝 No sessions remaining after extension attempts. Stopping extension task.");                    
                     break;
                 }
             }
             
-            info!("🛑 Session extension background task stopped");
+            debug!("🛑 Session extension background task stopped");            
         });
         
         *handle_guard = Some(handle);
@@ -240,7 +262,9 @@ impl SessionManager {
         
         if let Some(handle) = handle_guard.take() {
             handle.abort();
-            info!("🛑 Stopped session extension background task");
+            if !self.quiet_connections {
+                info!("🛑 Stopped session extension background task");
+            }
         }
     }
 
@@ -278,8 +302,10 @@ impl SessionManager {
         let mut connections = self.connections.write().await;
         connections.insert(connection_id, connection_info);
         
-        info!("📊 Registered connection {} for user {} from {}", 
-            connection_id, session.username, client_addr);
+        if !self.quiet_connections {
+            info!("📊 Registered connection {} for user {} from {}", 
+                connection_id, session.username, client_addr);
+        }
         
         Ok(connection_id)
     }
@@ -289,8 +315,10 @@ impl SessionManager {
         let session_id_to_check = {
             let mut connections = self.connections.write().await;
             if let Some(conn) = connections.remove(&connection_id) {
-                info!("📊 Unregistered connection {} for user {:?} from {}", 
-                    connection_id, conn.username, conn.client_addr);
+                if !self.quiet_connections {
+                    info!("📊 Unregistered connection {} for user {:?} from {}", 
+                        connection_id, conn.username, conn.client_addr);
+                }
                 conn.session_id
             } else {
                 None
@@ -373,6 +401,29 @@ impl SessionManager {
                 connection_id, graphql_time_ms, datafusion_time_ms, overall_time_ms);
         } else {
             warn!("📊 Could not find connection {} to update timing", connection_id);
+        }
+    }
+    
+    /// Clean up connections and sessions for a specific client address (used for abrupt disconnections)
+    pub async fn cleanup_connections_by_address(&self, client_addr: SocketAddr) {
+        let mut connections_to_remove = Vec::new();
+        
+        // Find all connections from this client address
+        {
+            let connections = self.connections.read().await;
+            for (conn_id, conn_info) in connections.iter() {
+                if conn_info.client_addr == client_addr {
+                    connections_to_remove.push(*conn_id);
+                    if !self.quiet_connections {
+                        debug!("🧹 Found orphaned connection {} from {} for cleanup", conn_id, client_addr);
+                    }
+                }
+            }
+        }
+        
+        // Remove each connection (this will also remove associated sessions)
+        for conn_id in connections_to_remove {
+            self.unregister_connection(conn_id).await;
         }
     }
     
