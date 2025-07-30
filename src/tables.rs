@@ -191,6 +191,7 @@ impl VirtualTable {
                 ("graphql_time", Type::INT8),    // GraphQL execution time in ms
                 ("datafusion_time", Type::INT8), // DataFusion execution time in ms
                 ("overall_time", Type::INT8),    // Overall query execution time in ms
+                ("last_alive_sent", Type::TIMESTAMP), // Last time keep-alive was sent
             ],
             Self::FromLessQuery => vec![
                 // Empty schema - FROM-less queries don't have predefined columns

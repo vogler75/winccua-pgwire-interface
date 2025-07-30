@@ -1,9 +1,11 @@
 use crate::auth::SessionManager;
+use crate::keep_alive::{send_keep_alive_probe, create_parameter_status_keepalive};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::{interval, timeout, Duration};
 use tracing::{debug, error, info, warn};
 use anyhow::Result;
 
@@ -18,8 +20,9 @@ pub(super) async fn handle_postgres_startup(
     data: &[u8],
     peer_addr: SocketAddr,
     quiet_connections: bool,
+    keep_alive_interval: u64,
 ) -> Result<()> {
-    handle_postgres_startup_stream(socket, session_manager, data, Some(peer_addr), quiet_connections).await
+    handle_postgres_startup_stream(socket, session_manager, data, Some(peer_addr), quiet_connections, keep_alive_interval).await
 }
 
 pub(super) async fn handle_postgres_startup_stream<T>(
@@ -28,6 +31,7 @@ pub(super) async fn handle_postgres_startup_stream<T>(
     data: &[u8],
     socket_addr: Option<SocketAddr>,
     quiet_connections: bool,
+    keep_alive_interval: u64,
 ) -> Result<()> 
 where
     T: AsyncRead + AsyncWrite + Unpin,
@@ -619,17 +623,28 @@ where
             info!("🔄 Starting PostgreSQL query loop for {}", peer_addr_str);
         }
         let mut buffer = vec![0; 4096];
+        
+        // Set up keep-alive interval
+        let mut keep_alive_timer = interval(Duration::from_secs(keep_alive_interval));
+        keep_alive_timer.tick().await; // Skip the immediate first tick
 
         loop {
             debug!("📖 Waiting for PostgreSQL query from {}", peer_addr_str);
 
-            let n = socket.read(&mut buffer).await?;
-            if n == 0 {
-                if !quiet_connections {
-                    info!("🔌 PostgreSQL connection closed by client {}", peer_addr_str);
-                }
-                break;
-            }
+            // Use tokio::select to handle both data and keep-alive timer
+            tokio::select! {
+                // Handle incoming data with a timeout
+                result = timeout(Duration::from_secs(60), socket.read(&mut buffer)) => {
+                    match result {
+                        Ok(Ok(n)) => {
+                            if n == 0 {
+                                if !quiet_connections {
+                                    info!("🔌 PostgreSQL connection closed by client {}", peer_addr_str);
+                                }
+                                break;
+                            }
+                            
+                            // Process the received data
 
             debug!(
                 "📊 Received {} bytes from PostgreSQL client {}",
@@ -730,6 +745,49 @@ where
                 
                 
                 socket.write_all(&response_buffer).await?;
+            }
+                        }
+                        Ok(Err(e)) => {
+                            error!("❌ Read error from {}: {}", peer_addr_str, e);
+                            break;
+                        }
+                        Err(_) => {
+                            warn!("⏰ Read timeout from {} (60s)", peer_addr_str);
+                            // Connection might be stale, but we'll try keep-alive first
+                        }
+                    }
+                }
+                
+                // Keep-alive timer fired
+                _ = keep_alive_timer.tick() => {
+                    debug!("💓 Keep-alive timer fired for {}", peer_addr_str);
+                    
+                    // Send a keep-alive probe
+                    match send_keep_alive_probe(&mut socket).await {
+                        Ok(true) => {
+                            // Keep-alive probe successful
+                            if let Some(conn_id) = connection_id {
+                                session_manager.update_last_alive_sent(conn_id).await;
+                            }
+                            
+                            // Also send a PostgreSQL-level keep-alive (ParameterStatus)
+                            let keepalive_msg = create_parameter_status_keepalive();
+                            if let Err(e) = socket.write_all(&keepalive_msg).await {
+                                warn!("⚠️ Failed to send PostgreSQL keep-alive to {}: {}", peer_addr_str, e);
+                                break;
+                            }
+                        }
+                        Ok(false) => {
+                            // Connection is dead
+                            warn!("💔 Keep-alive detected dead connection to {}", peer_addr_str);
+                            break;
+                        }
+                        Err(e) => {
+                            warn!("⚠️ Keep-alive error for {}: {}", peer_addr_str, e);
+                            // Continue anyway, might be temporary
+                        }
+                    }
+                }
             }
         }
     } else {

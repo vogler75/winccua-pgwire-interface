@@ -15,6 +15,7 @@ pub(super) async fn handle_connection(
     client_addr: SocketAddr,
     tls_acceptor: Option<TlsAcceptor>,
     quiet_connections: bool,
+    keep_alive_interval: u64,
 ) -> Result<()> {
     let peer_addr = client_addr;
     if !quiet_connections {
@@ -75,7 +76,7 @@ pub(super) async fn handle_connection(
             };
             
             // Now handle the startup message over the encrypted connection
-            return handle_postgres_startup_tls(tls_stream, session_manager, peer_addr, quiet_connections).await;
+            return handle_postgres_startup_tls(tls_stream, session_manager, peer_addr, quiet_connections, keep_alive_interval).await;
             
         } else {
             if !quiet_connections {
@@ -121,6 +122,7 @@ pub(super) async fn handle_connection(
                 &startup_buffer[..startup_n],
                 peer_addr,
                 quiet_connections,
+                keep_alive_interval,
             )
             .await;
         }
@@ -132,7 +134,7 @@ pub(super) async fn handle_connection(
         }
 
         // For now, attempt to handle it as PostgreSQL startup
-        return handle_postgres_startup(socket, session_manager, &peek_buffer[..n], peer_addr, quiet_connections)
+        return handle_postgres_startup(socket, session_manager, &peek_buffer[..n], peer_addr, quiet_connections, keep_alive_interval)
             .await;
     }
 
@@ -337,6 +339,7 @@ async fn handle_postgres_startup_tls<T>(
     session_manager: Arc<SessionManager>,
     peer_addr: SocketAddr,
     quiet_connections: bool,
+    keep_alive_interval: u64,
 ) -> Result<()> 
 where
     T: AsyncRead + AsyncWrite + Unpin,
@@ -364,6 +367,7 @@ where
         &startup_buffer[..startup_n],
         Some(peer_addr),
         quiet_connections,
+        keep_alive_interval,
     )
     .await;
 }

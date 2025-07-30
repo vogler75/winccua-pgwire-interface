@@ -15,6 +15,7 @@ mod auth;
 mod datafusion_handler;
 mod graphql;
 mod information_schema;
+mod keep_alive;
 mod pg_protocol;
 mod query_handler;
 mod sql_handler;
@@ -107,6 +108,10 @@ pub struct Args {
     #[arg(long, default_value_t = 600)]
     pub session_extension_interval: u64,
 
+    /// Keep-alive interval in seconds (default: 30 seconds)
+    #[arg(long, default_value_t = 30)]
+    pub keep_alive_interval: u64,
+
     /// Enable SQL query logging at INFO level (default: logs at DEBUG level)
     #[arg(long)]
     pub log_sql: bool,
@@ -142,6 +147,7 @@ async fn main() -> Result<()> {
     info!("Binding to: {}", args.bind_addr);
     info!("GraphQL URL: {}", graphql_url);
     info!("Session extension interval: {} seconds", args.session_extension_interval);
+    info!("Keep-alive interval: {} seconds", args.keep_alive_interval);
     
     // Set global SQL logging flag
     LOG_SQL.store(args.log_sql, Ordering::Relaxed);
@@ -201,8 +207,13 @@ async fn main() -> Result<()> {
         info!("🐘 Starting PostgreSQL-compatible server");
     }
     
-    let server = pg_protocol::PgProtocolServer::new(graphql_url, tls_config, args.session_extension_interval)
-        .with_quiet_connections(args.quiet_connections);
+    let server = pg_protocol::PgProtocolServer::with_keep_alive(
+        graphql_url, 
+        tls_config, 
+        args.session_extension_interval,
+        args.keep_alive_interval
+    )
+    .with_quiet_connections(args.quiet_connections);
     server.start(args.bind_addr).await?;
 
     Ok(())

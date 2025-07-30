@@ -37,6 +37,7 @@ pub async fn handle_pg_stat_activity_query(
         Field::new("graphql_time", DataType::Int64, true),
         Field::new("datafusion_time", DataType::Int64, true),
         Field::new("overall_time", DataType::Int64, true),
+        Field::new("last_alive_sent", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
     ]));
 
     // Convert connections to Arrow columns
@@ -57,8 +58,10 @@ pub async fn handle_pg_stat_activity_query(
         graphql_times,
         datafusion_times,
         overall_times,
+        last_alive_sents,
     ) = connections.into_iter().fold(
         (
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -101,6 +104,10 @@ pub async fn handle_pg_stat_activity_query(
             acc.13.push(conn.graphql_time_ms.map(|t| t as i64));
             acc.14.push(conn.datafusion_time_ms.map(|t| t as i64));
             acc.15.push(conn.overall_time_ms.map(|t| t as i64));
+            
+            let last_alive_sent_nanos = conn.last_alive_sent.and_then(|ts| ts.timestamp_nanos_opt());
+            acc.16.push(last_alive_sent_nanos);
+            
             acc
         },
     );
@@ -125,6 +132,7 @@ pub async fn handle_pg_stat_activity_query(
             Arc::new(Int64Array::from(graphql_times)),
             Arc::new(Int64Array::from(datafusion_times)),
             Arc::new(Int64Array::from(overall_times)),
+            Arc::new(TimestampNanosecondArray::from(last_alive_sents)),
         ],
     )?;
 

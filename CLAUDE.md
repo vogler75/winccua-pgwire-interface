@@ -34,6 +34,10 @@ cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127
 # Run with quiet connection logging (suppress connection/auth messages)
 cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
   --quiet-connections
+
+# Run with custom keep-alive interval (e.g., 60 seconds)
+cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
+  --keep-alive-interval 60
 ```
 
 ### Testing
@@ -110,6 +114,10 @@ The server acts as a translation layer with DataFusion integration:
 - All GraphQL communication goes through `src/graphql/client.rs`
 - DataFusion integration via `src/datafusion_handler.rs` for complex queries
 - **Session management with automatic extension** - Sessions are automatically extended periodically to prevent expiration (configurable via --session-extension-interval, default 600 seconds)
+- **Keep-alive mechanism** - Server periodically sends keep-alive messages to detect stale connections (configurable via --keep-alive-interval, default 30 seconds)
+  - TCP-level probe to detect dead connections
+  - PostgreSQL ParameterStatus messages for protocol-level keep-alive
+  - Updates `last_alive_sent` timestamp in `pg_stat_activity` table
 - Debug logging uses emoji indicators (🚀 startup, 📨 incoming, 📤 outgoing, etc.)
 - Supports Extended Query Protocol for prepared statements
 - Virtual tables defined in `create_table_function()` in `tables.rs`

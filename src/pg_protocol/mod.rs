@@ -69,14 +69,16 @@ pub struct PgProtocolServer {
     session_manager: Arc<SessionManager>,
     tls_config: Option<TlsConfig>,
     quiet_connections: bool,
+    keep_alive_interval: u64,
 }
 
 impl PgProtocolServer {
-    pub fn new(graphql_url: String, tls_config: Option<TlsConfig>, session_extension_interval: u64) -> Self {
+    pub fn with_keep_alive(graphql_url: String, tls_config: Option<TlsConfig>, session_extension_interval: u64, keep_alive_interval: u64) -> Self {
         Self {
             session_manager: Arc::new(SessionManager::with_extension_interval(graphql_url, session_extension_interval)),
             tls_config,
             quiet_connections: false,
+            keep_alive_interval,
         }
     }
 
@@ -116,6 +118,7 @@ impl PgProtocolServer {
             let session_manager = self.session_manager.clone();
             let tls_acceptor = tls_acceptor.clone();
             let quiet_connections = self.quiet_connections;
+            let keep_alive_interval = self.keep_alive_interval;
             
             tokio::spawn(async move {
                 debug!("🚀 Starting connection handler for {}", client_addr);
@@ -125,7 +128,8 @@ impl PgProtocolServer {
                     session_manager.clone(), 
                     client_addr,
                     tls_acceptor,
-                    quiet_connections
+                    quiet_connections,
+                    keep_alive_interval
                 ).await
                 {
                     // Check if this is a connection error that might leave orphaned sessions

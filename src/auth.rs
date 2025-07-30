@@ -30,6 +30,7 @@ pub struct ConnectionInfo {
     pub graphql_time_ms: Option<u64>,       // GraphQL execution time in milliseconds
     pub datafusion_time_ms: Option<u64>,    // DataFusion execution time in milliseconds
     pub overall_time_ms: Option<u64>,       // Overall query execution time in milliseconds
+    pub last_alive_sent: Option<DateTime<Utc>>, // Last time a keep-alive was successfully sent
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -297,6 +298,7 @@ impl SessionManager {
             graphql_time_ms: None,
             datafusion_time_ms: None,
             overall_time_ms: None,
+            last_alive_sent: None,
         };
         
         let mut connections = self.connections.write().await;
@@ -432,6 +434,15 @@ impl SessionManager {
     pub async fn get_connections(&self) -> Vec<ConnectionInfo> {
         let connections = self.connections.read().await;
         connections.values().cloned().collect()
+    }
+    
+    /// Update last keep-alive sent time for a connection
+    pub async fn update_last_alive_sent(&self, connection_id: u32) {
+        let mut connections = self.connections.write().await;
+        if let Some(conn) = connections.get_mut(&connection_id) {
+            conn.last_alive_sent = Some(Utc::now());
+            debug!("💓 Updated last keep-alive time for connection {}", connection_id);
+        }
     }
     
     /// Update connection state for transactions
