@@ -280,7 +280,7 @@ impl QueryHandler {
                 }
             }
             SqlResult::SetStatement(set_command) => {
-                info!("✅ Successfully executed SET statement: {}", set_command);
+                debug!("✅ Successfully executed SET statement: {}", set_command);
                 // Return empty result for SET statements
                 Ok(QueryResult::new(vec![], vec![]))
             }

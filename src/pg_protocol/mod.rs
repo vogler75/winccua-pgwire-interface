@@ -95,7 +95,7 @@ impl PgProtocolServer {
 
     pub async fn start(&self, addr: SocketAddr) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
-        info!("PostgreSQL-like server listening on {}", addr);
+        info!("🐘 PostgreSQL-like server listening on {}", addr);
 
         // Create TLS acceptor if TLS is configured
         let tls_acceptor = if let Some(ref tls_config) = self.tls_config {

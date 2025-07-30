@@ -167,7 +167,7 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.remove(session_id) {
             if !self.quiet_connections {
-                info!("Removed session {} for user {}", session_id, session.username);
+                info!("🛑 Removed session {} for user {}", session_id, session.username);
             }
         }
         

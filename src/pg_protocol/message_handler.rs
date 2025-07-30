@@ -171,7 +171,7 @@ async fn handle_parse_message(
         pos += 4;
     }
 
-    info!(
+    debug!(
         "📋 Parse: statement='{}', query='{}', params={}",
         statement_name,
         query.trim(),
@@ -180,7 +180,7 @@ async fn handle_parse_message(
 
     // For SET statements, we don't need to validate further.
     if query.trim().to_uppercase().starts_with("SET") {
-        info!("📋 Parse: accepting SET statement: {}", query.trim());
+        debug!("📋 Parse: accepting SET statement: {}", query.trim());
         let prepared_stmt = PreparedStatement {
             name: statement_name.clone(),
             query: query.clone(),
@@ -198,7 +198,7 @@ async fn handle_parse_message(
     if super::query_execution::is_transaction_control_statement(&trimmed_query)
         || super::query_execution::is_utility_statement(&trimmed_query)
     {
-        info!(
+        debug!(
             "📋 Parse: accepting transaction/utility statement: {}",
             query.trim()
         );
@@ -308,7 +308,7 @@ async fn handle_bind_message(
         }
     }
 
-    info!(
+    debug!(
         "🔗 Bind: portal='{}', statement='{}', params={:?}",
         portal_name, statement_name, parameters
     );
@@ -348,7 +348,7 @@ async fn handle_execute_message(
         payload[pos + 3],
     ]);
 
-    info!("⚡ Execute: portal='{}'", portal_name);
+    debug!("⚡ Execute: portal='{}'", portal_name);
 
     // Get the portal
     let portal = connection_state
@@ -365,7 +365,7 @@ async fn handle_execute_message(
     // Substitute parameters in the query
     let final_query = substitute_parameters(&statement.query, &portal.parameters)?;
 
-    info!("🔍 Executing parameterized query: {}", final_query.trim());
+    debug!("🔍 Executing parameterized query: {}", final_query.trim());
 
     // Start query tracking with timing
     let query_start = std::time::Instant::now();
@@ -390,7 +390,7 @@ async fn handle_execute_message(
             let overall_time_ms = query_start.elapsed().as_millis() as u64;
             if let Some(conn_id) = connection_id {
                 session_manager.end_query(conn_id).await;
-                info!("🕐 Extended query completed in {}ms for connection {}", overall_time_ms, conn_id);
+                debug!("🕐 Extended query completed in {}ms for connection {}", overall_time_ms, conn_id);
             }
             Ok(response)
         }
@@ -422,7 +422,7 @@ async fn handle_describe_message(
         .map_err(|_| anyhow!("Invalid UTF-8 in describe message"))?
         .trim_end_matches('\0');
 
-    info!(
+    debug!(
         "📄 Describe: type='{}', name='{}'",
         object_type as char, object_name
     );
@@ -443,10 +443,10 @@ async fn handle_describe_message(
                     && !super::query_execution::is_utility_statement(&trimmed_query)
                 {
                     // Execute the query to get proper column types (like Execute message does)
-                    tracing::info!("🚀 Describe message: Executing query to get proper column types");
+                    tracing::debug!("🚀 Describe message: Executing query to get proper column types");
                     match crate::query_handler::QueryHandler::execute_query_with_connection(&statement.query, session, session_manager.clone(), connection_id).await {
                         Ok(query_result) => {
-                            tracing::info!("🚀 Describe message: Generated QueryResult with {} columns and proper OIDs", query_result.columns.len());
+                            tracing::debug!("🚀 Describe message: Generated QueryResult with {} columns and proper OIDs", query_result.columns.len());
                             response.extend_from_slice(&create_row_description_response_with_types(&query_result));
                         }
                         Err(e) => {
@@ -489,10 +489,10 @@ async fn handle_describe_message(
                     }
                     
                     // For SELECT queries, execute the query to get proper column types
-                    tracing::info!("🚀 Portal Describe: Executing query to get proper column types");
+                    tracing::debug!("🚀 Portal Describe: Executing query to get proper column types");
                     match crate::query_handler::QueryHandler::execute_query_with_connection(&statement.query, session, session_manager.clone(), connection_id).await {
                         Ok(query_result) => {
-                            tracing::info!("🚀 Portal Describe: Generated QueryResult with {} columns and proper OIDs", query_result.columns.len());
+                            tracing::debug!("🚀 Portal Describe: Generated QueryResult with {} columns and proper OIDs", query_result.columns.len());
                             Ok(create_row_description_response_with_types(&query_result))
                         }
                         Err(e) => {
@@ -536,7 +536,7 @@ async fn handle_close_message(
         .map_err(|_| anyhow!("Invalid UTF-8 in close message"))?
         .trim_end_matches('\0');
 
-    info!(
+    debug!(
         "🔒 Close: type='{}', name='{}'",
         object_type as char, object_name
     );
@@ -557,13 +557,13 @@ async fn handle_close_message(
 }
 
 async fn handle_sync_message() -> Result<Vec<u8>> {
-    info!("🔄 Sync");
+    debug!("🔄 Sync");
     Ok(create_ready_for_query_response())
 }
 
 async fn handle_terminate_message(quiet_connections: bool) -> Result<Vec<u8>> {
     if !quiet_connections {
-        info!("🔚 Terminate: Client requested graceful connection termination");
+        debug!("🔚 Terminate: Client requested graceful connection termination");
     }
     // Return a special marker that signals the connection should be closed
     // We'll use an error with a specific message that the caller can check

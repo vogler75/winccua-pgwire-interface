@@ -338,8 +338,8 @@ pub(super) fn format_as_extended_query_result(csv_data: &str, query_info: &crate
 /// Create RowDescription using QueryResult with proper column types (preferred for Extended Query Protocol)
 pub(super) fn create_row_description_response_with_types(query_result: &crate::query_handler::QueryResult) -> Vec<u8> {
     let mut response = Vec::new();
-    tracing::info!("🚀 create_row_description_response_with_types() CALLED with {} columns", query_result.columns.len());
-    tracing::info!("🚀 Column types (OIDs): {:?}", query_result.column_types);
+    tracing::debug!("🚀 create_row_description_response_with_types() CALLED with {} columns", query_result.columns.len());
+    tracing::debug!("🚀 Column types (OIDs): {:?}", query_result.column_types);
     response.push(b'T'); // 'T' = RowDescription message type
 
     let mut fields_data = Vec::new();
@@ -359,7 +359,7 @@ pub(super) fn create_row_description_response_with_types(query_result: &crate::q
         } else {
             25 // TEXT default
         };
-        tracing::info!("🚀 create_row_description_response_with_types: Column '{}' -> PostgreSQL OID {} ({})", 
+        tracing::debug!("🚀 create_row_description_response_with_types: Column '{}' -> PostgreSQL OID {} ({})", 
             header, type_oid, postgres_type_name(type_oid));
         fields_data.extend_from_slice(&type_oid.to_be_bytes()); // Data type OID
 
@@ -385,8 +385,8 @@ pub(super) fn create_row_description_response_with_types(query_result: &crate::q
 /// Create RowDescription using QueryInfo (fallback for when QueryResult is not available)
 pub(super) fn create_row_description_response(query_info: &crate::tables::QueryInfo) -> Vec<u8> {
     let mut response = Vec::new();
-    tracing::info!("🚀 create_row_description_response() CALLED with {} columns", query_info.columns.len());
-    tracing::info!("🚀 Query info columns: {:?}", query_info.columns);
+    tracing::debug!("🚀 create_row_description_response() CALLED with {} columns", query_info.columns.len());
+    tracing::debug!("🚀 Query info columns: {:?}", query_info.columns);
     response.push(b'T'); // 'T' = RowDescription message type
 
     let mut fields_data = Vec::new();
@@ -410,7 +410,7 @@ pub(super) fn create_row_description_response(query_info: &crate::tables::QueryI
                 25 // TEXT default for unknown columns
             }
         };
-        tracing::info!("🚀 create_row_description_response: Column '{}' -> PostgreSQL OID {} ({})", 
+        tracing::debug!("🚀 create_row_description_response: Column '{}' -> PostgreSQL OID {} ({})", 
             header, type_oid, postgres_type_name(type_oid));
         fields_data.extend_from_slice(&type_oid.to_be_bytes()); // Data type OID
 
@@ -604,7 +604,7 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
 pub(super) fn format_query_result_as_extended_query_result(result: &crate::query_handler::QueryResult) -> Vec<u8> {
     let mut response = Vec::new();
     
-    tracing::info!("🚀 format_query_result_as_extended_query_result() CALLED: {} columns, {} rows", result.columns.len(), result.rows.len());
+    tracing::debug!("🚀 format_query_result_as_extended_query_result() CALLED: {} columns, {} rows", result.columns.len(), result.rows.len());
     
     // DataRow messages only (no RowDescription - that was sent by Describe)
     for row in &result.rows {
