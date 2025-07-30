@@ -18,7 +18,7 @@ use arrow::array::{Float64Array, Int64Array, StringArray, TimestampNanosecondArr
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Represents a single value in a query result
 #[derive(Debug, Clone)]
@@ -304,6 +304,17 @@ impl QueryHandler {
                 final_result.timings.datafusion_time_ms,
                 Some(overall_time_ms),
             ).await;
+            if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
+                info!("🕐 Query completed in {}ms for connection {} (GraphQL: {:?}ms, DataFusion: {:?}ms)", 
+                    overall_time_ms, conn_id, 
+                    final_result.timings.graphql_time_ms,
+                    final_result.timings.datafusion_time_ms);
+            } else {
+                debug!("🕐 Query completed in {}ms for connection {} (GraphQL: {:?}ms, DataFusion: {:?}ms)", 
+                    overall_time_ms, conn_id, 
+                    final_result.timings.graphql_time_ms,
+                    final_result.timings.datafusion_time_ms);
+            }
         } else {
             debug!("🔍 No connection_id provided, timing data not saved to session manager");
         }
