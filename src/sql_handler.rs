@@ -234,12 +234,21 @@ impl SqlHandler {
     fn extract_columns(select: &Select, table: &VirtualTable) -> Result<(Vec<String>, std::collections::HashMap<String, String>)> {
         let mut columns = Vec::new();
         let mut column_mappings = std::collections::HashMap::new();
-        let is_datafusion_table = matches!(table, VirtualTable::TagValues | VirtualTable::TagList | VirtualTable::LoggedTagValues | VirtualTable::ActiveAlarms | VirtualTable::LoggedAlarms | VirtualTable::PgStatActivity);
+        let is_datafusion_table = true; // All tables now support DataFusion processing
 
         for item in &select.projection {
             match item {
                 SelectItem::Wildcard(_) => {
                     columns.extend(table.get_column_names().iter().map(|s| s.to_string()));
+                }
+                SelectItem::QualifiedWildcard(object_name, _) => {
+                    if is_datafusion_table {
+                        // For DataFusion tables, pass the qualified wildcard as-is
+                        columns.push(format!("{}.*", object_name));
+                    } else {
+                        // For non-DataFusion tables, expand to all columns (same as unqualified wildcard)
+                        columns.extend(table.get_column_names().iter().map(|s| s.to_string()));
+                    }
                 }
                 SelectItem::UnnamedExpr(expr) => {
                     if is_datafusion_table {
@@ -283,7 +292,6 @@ impl SqlHandler {
                         }
                     }
                 }
-                _ => return Err(anyhow!("Unsupported SELECT item")),
             }
         }
 

@@ -251,6 +251,8 @@ async fn handle_parse_message(
             Ok(create_parse_complete_response())
         }
         Err(e) => {
+            // Query is invalid or unsupported
+            warn!("❌ Parse failed for statement with name'{}': {}: query: {}", statement_name, e, query.trim());
             Err(anyhow!("{}", format!("Unsupported or invalid SQL statement: {}: Query: {}", e, query.trim())))
         }
     }
