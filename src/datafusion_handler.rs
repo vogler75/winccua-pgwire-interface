@@ -1,9 +1,189 @@
 use anyhow::Result;
 use arrow::record_batch::RecordBatch;
 use datafusion::prelude::*;
+use datafusion::logical_expr::{ScalarUDF, Signature, Volatility, ScalarUDFImpl, ScalarFunctionArgs, ColumnarValue};
+use datafusion::arrow::datatypes::DataType;
 use std::time::Instant;
 use tracing::debug;
 use crate::catalog;
+use std::sync::Arc;
+
+/// Implementation of pg_get_userbyid function
+#[derive(Debug)]
+struct PgGetUserByIdUDF {
+    signature: Signature,
+}
+
+impl PgGetUserByIdUDF {
+    fn new() -> Self {
+        Self {
+            signature: Signature::exact(vec![DataType::Int32], Volatility::Stable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for PgGetUserByIdUDF {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "pg_catalog_pg_get_userbyid"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
+        use arrow::array::{Array, Int32Array, StringArray};
+        use arrow::compute::kernels::cast;
+        
+        let args = args.args;
+        if args.len() != 1 {
+            return Err(datafusion::error::DataFusionError::Internal("pg_get_userbyid expects 1 argument".to_string()));
+        }
+        
+        let user_oids = args[0].clone().into_array(1)?;
+        let mut results = Vec::new();
+        
+        // Convert input to i32 if needed
+        let oid_array = if user_oids.data_type() == &DataType::Int32 {
+            user_oids.as_any().downcast_ref::<Int32Array>().unwrap()
+        } else {
+            // Try to cast to Int32
+            let casted = cast::cast(user_oids.as_ref(), &DataType::Int32)?;
+            let casted_i32 = casted.as_any().downcast_ref::<Int32Array>().unwrap();
+            return Ok(ColumnarValue::Array({
+                let mut cast_results = Vec::new();
+                for i in 0..casted_i32.len() {
+                    if casted_i32.is_null(i) {
+                        cast_results.push(None);
+                    } else {
+                        let oid = casted_i32.value(i);
+                        let username = match oid {
+                            10 => "postgres",
+                            0 => "unknown",
+                            1 => "template1",
+                            _ => "user",
+                        };
+                        cast_results.push(Some(username.to_string()));
+                    }
+                }
+                Arc::new(StringArray::from(cast_results))
+            }));
+        };
+        
+        for i in 0..oid_array.len() {
+            if oid_array.is_null(i) {
+                results.push(None);
+            } else {
+                let oid = oid_array.value(i);
+                // Map common PostgreSQL user OIDs to names
+                let username = match oid {
+                    10 => "postgres",     // Default superuser
+                    0 => "unknown",       // Invalid OID
+                    1 => "template1",     // Template database owner
+                    _ => "user",          // Generic user for other OIDs
+                };
+                results.push(Some(username.to_string()));
+            }
+        }
+        
+        let result_array = StringArray::from(results);
+        Ok(ColumnarValue::Array(Arc::new(result_array)))
+    }
+}
+
+/// Implementation of pg_get_function_identity_arguments function
+#[derive(Debug)]
+struct PgGetFunctionIdentityArgumentsUDF {
+    signature: Signature,
+}
+
+impl PgGetFunctionIdentityArgumentsUDF {
+    fn new() -> Self {
+        Self {
+            signature: Signature::exact(vec![DataType::Int32], Volatility::Stable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for PgGetFunctionIdentityArgumentsUDF {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "pg_get_function_identity_arguments"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
+        use arrow::array::{Array, Int32Array, StringArray};
+        use arrow::compute::kernels::cast;
+        
+        let args = args.args;
+        if args.len() != 1 {
+            return Err(datafusion::error::DataFusionError::Internal("pg_get_function_identity_arguments expects 1 argument".to_string()));
+        }
+        
+        let function_oids = args[0].clone().into_array(1)?;
+        let mut results = Vec::new();
+        
+        // Convert input to i32 if needed
+        let oid_array = if function_oids.data_type() == &DataType::Int32 {
+            function_oids.as_any().downcast_ref::<Int32Array>().unwrap()
+        } else {
+            // Try to cast to Int32
+            let casted = cast::cast(function_oids.as_ref(), &DataType::Int32)?;
+            let casted_i32 = casted.as_any().downcast_ref::<Int32Array>().unwrap();
+            return Ok(ColumnarValue::Array({
+                let mut cast_results = Vec::new();
+                for i in 0..casted_i32.len() {
+                    if casted_i32.is_null(i) {
+                        cast_results.push(None);
+                    } else {
+                        // For now, return empty string for all function OIDs
+                        cast_results.push(Some("".to_string()));
+                    }
+                }
+                Arc::new(StringArray::from(cast_results))
+            }));
+        };
+        
+        for i in 0..oid_array.len() {
+            if oid_array.is_null(i) {
+                results.push(None);
+            } else {
+                // For now, return empty string for all function OIDs
+                // In a real implementation, this would look up the actual function signature
+                results.push(Some("".to_string()));
+            }
+        }
+        
+        let result_array = StringArray::from(results);
+        Ok(ColumnarValue::Array(Arc::new(result_array)))
+    }
+}
+
+/// Register PostgreSQL system functions with DataFusion context
+fn register_postgresql_functions(ctx: &SessionContext) -> Result<()> {
+    ctx.register_udf(ScalarUDF::new_from_impl(PgGetUserByIdUDF::new()));
+    ctx.register_udf(ScalarUDF::new_from_impl(PgGetFunctionIdentityArgumentsUDF::new()));
+    Ok(())
+}
 
 /// Replace schema-qualified table names with underscore versions to avoid DataFusion schema parsing
 fn normalize_schema_qualified_tables(sql: &str) -> String {
@@ -25,6 +205,10 @@ pub async fn execute_query(
     let start_time = Instant::now();
     
     let ctx = SessionContext::new();
+    
+    // Register PostgreSQL system functions
+    register_postgresql_functions(&ctx)?;
+    
     ctx.register_batch(table_name, batch)?;
     let df = ctx.sql(sql).await?;
     let results = df.collect().await?;
@@ -44,6 +228,9 @@ pub async fn execute_query_with_catalog(sql: &str) -> Result<(Vec<RecordBatch>, 
     debug!("🔧 Processed SQL: {} -> {}", sql, processed_sql);
     
     let ctx = SessionContext::new();
+    
+    // Register PostgreSQL system functions
+    register_postgresql_functions(&ctx)?;
     
     // Register all catalog tables if available
     if let Some(catalog) = catalog::get_catalog() {
@@ -111,6 +298,9 @@ pub async fn execute_mixed_query(
     let start_time = Instant::now();
     
     let ctx = SessionContext::new();
+    
+    // Register PostgreSQL system functions
+    register_postgresql_functions(&ctx)?;
     
     // Register regular tables (e.g., from GraphQL results)
     for (table_name, batch) in regular_batches {
