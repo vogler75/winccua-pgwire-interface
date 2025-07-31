@@ -251,18 +251,7 @@ async fn handle_parse_message(
             Ok(create_parse_complete_response())
         }
         Err(e) => {
-            // Query is invalid or unsupported
-            warn!("❌ Parse failed for statement '{}': {}", statement_name, e);
-            warn!("❌ Unsupported query: {}", query.trim());
-
-            // Return a more descriptive error for common unsupported statements
-            let error_msg = if query.trim().to_uppercase().starts_with("SET ") {
-                format!("SET statements are not supported. Query: {}", query.trim())
-            } else {
-                format!("Unsupported or invalid SQL statement: {}", e)
-            };
-
-            Err(anyhow!("{}", error_msg))
+            Err(anyhow!("{}", format!("Unsupported or invalid SQL statement: {}: Query: {}", e, query.trim())))
         }
     }
 }

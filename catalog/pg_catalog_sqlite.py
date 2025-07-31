@@ -321,6 +321,16 @@ def create_catalog_tables(conn: sqlite3.Connection):
         )
     """)
     
+    # Create pg_enum (enum values)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_enum" (
+            oid INTEGER PRIMARY KEY,
+            enumtypid INTEGER NOT NULL,
+            enumsortorder REAL NOT NULL,
+            enumlabel TEXT NOT NULL
+        )
+    """)
+    
     conn.commit()
 
 def populate_catalog_tables(conn: sqlite3.Connection):
@@ -407,6 +417,36 @@ def populate_catalog_tables(conn: sqlite3.Connection):
              1663, 'en_US.UTF-8', 'en_US.UTF-8', NULL, NULL, NULL, NULL)
     """)
     
+    # Insert enum types and values for WinCC-specific enums
+    # First, we need to add enum types to pg_type table
+    cursor.execute("""
+        INSERT INTO "pg_catalog.pg_type" (oid, typname, typnamespace, typlen, typbyval, 
+                           typtype, typcategory, typalign, typstorage)
+        VALUES 
+            (16500, 'alarm_state_enum', 2200, 4, true, 'e', 'E', 'i', 'p'),
+            (16501, 'tag_quality_enum', 2200, 4, true, 'e', 'E', 'i', 'p')
+    """)
+    
+    # Insert enum values for alarm_state_enum
+    cursor.execute("""
+        INSERT INTO "pg_catalog.pg_enum" (oid, enumtypid, enumsortorder, enumlabel)
+        VALUES 
+            (16510, 16500, 1.0, 'active'),
+            (16511, 16500, 2.0, 'acknowledged'),
+            (16512, 16500, 3.0, 'cleared'),
+            (16513, 16500, 4.0, 'reset')
+    """)
+    
+    # Insert enum values for tag_quality_enum
+    cursor.execute("""
+        INSERT INTO "pg_catalog.pg_enum" (oid, enumtypid, enumsortorder, enumlabel)
+        VALUES 
+            (16520, 16501, 1.0, 'good'),
+            (16521, 16501, 2.0, 'bad'),
+            (16522, 16501, 3.0, 'uncertain'),
+            (16523, 16501, 4.0, 'not_connected')
+    """)
+    
     conn.commit()
 
 def main():
@@ -447,6 +487,20 @@ def main():
         """)
         for row in cursor.fetchall():
             print(f"  - {row[0]}: {row[1]}")
+        
+        print("\nEnum types and values:")
+        cursor.execute("""
+            SELECT t.typname, e.enumlabel, e.enumsortorder
+            FROM "pg_catalog.pg_type" t
+            JOIN "pg_catalog.pg_enum" e ON t.oid = e.enumtypid
+            ORDER BY t.typname, e.enumsortorder
+        """)
+        current_type = None
+        for row in cursor.fetchall():
+            if current_type != row[0]:
+                current_type = row[0]
+                print(f"  - {current_type}:")
+            print(f"    * {row[1]} (order: {row[2]})")
         
         print(f"\nDatabase created successfully: {db_file}")
         
