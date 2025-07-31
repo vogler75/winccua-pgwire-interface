@@ -474,6 +474,11 @@ impl SqlHandler {
                         Err(anyhow!("Invalid number: {}", n))
                     }
                 }
+                Value::Placeholder(placeholder) => {
+                    // For placeholder values like $1, $2, etc., treat as string for now
+                    // They will be substituted during execution
+                    Ok(FilterValue::String(placeholder.clone()))
+                }
                 _ => Err(anyhow!("Unsupported value type: {:?}", Self::extract_value_from_span(value_span))),
             },
             Expr::Identifier(ident) => {
@@ -539,6 +544,11 @@ impl SqlHandler {
                     } else {
                         Err(anyhow!("Invalid number: {}", n))
                     }
+                }
+                Value::Placeholder(placeholder) => {
+                    // For placeholder values like $1, $2, etc., treat as string for now
+                    // They will be substituted during execution
+                    Ok(FilterValue::String(placeholder.clone()))
                 }
                 _ => Err(anyhow!("Unsupported value type: {:?}", Self::extract_value_from_span(value_span))),
             },
