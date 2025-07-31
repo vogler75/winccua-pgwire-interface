@@ -277,6 +277,10 @@ impl QueryHandler {
                     VirtualTable::FromLessQuery => {
                         Self::execute_from_less_query(sql, &query_info, session).await
                     }
+                    VirtualTable::CatalogTable(_) => {
+                        // Use the catalog handler which converts to pgwire Response directly
+                        Self::execute_catalog_query(sql, &query_info, session).await
+                    }
                 }
             }
             SqlResult::SetStatement(set_command) => {
@@ -570,6 +574,26 @@ impl QueryHandler {
         
         // Convert the results to QueryResult
         QueryResult::from_record_batches(batches)
+    }
+
+    async fn execute_catalog_query(
+        sql: &str,
+        _query_info: &QueryInfo,
+        _session: &AuthenticatedSession,
+    ) -> Result<QueryResult> {
+        debug!("📋 Executing catalog query: {}", sql);
+        
+        // For now, use DataFusion with catalog tables to execute the query
+        let datafusion_start = std::time::Instant::now();
+        let (results, _timing) = datafusion_handler::execute_query_with_catalog(sql).await?;
+        let datafusion_time_ms = datafusion_start.elapsed().as_millis() as u64;
+        
+        // Convert RecordBatch results to QueryResult
+        let mut query_result = QueryResult::from_record_batches(results)?;
+        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
+        
+        debug!("✅ Catalog query completed in {}ms", datafusion_time_ms);
+        Ok(query_result)
     }
 
     async fn execute_active_alarms_datafusion_query(

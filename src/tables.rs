@@ -1,4 +1,5 @@
 use pgwire::api::Type;
+use crate::catalog;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VirtualTable {
@@ -11,6 +12,7 @@ pub enum VirtualTable {
     InformationSchemaColumns,
     PgStatActivity,
     FromLessQuery, // For queries without FROM clause like SELECT 1, SELECT VERSION(), etc.
+    CatalogTable(String), // Dynamic catalog table loaded from SQLite
 }
 
 impl ToString for VirtualTable {
@@ -25,6 +27,7 @@ impl ToString for VirtualTable {
             VirtualTable::InformationSchemaColumns => "information_schema.columns".to_string(),
             VirtualTable::PgStatActivity => "pg_stat_activity".to_string(),
             VirtualTable::FromLessQuery => "dual".to_string(), // Use Oracle-style "dual" table name
+            VirtualTable::CatalogTable(name) => name.clone(),
         }
     }
 }
@@ -38,6 +41,21 @@ impl VirtualTable {
                 Some("columns") => Some(Self::InformationSchemaColumns),
                 _ => None,
             }
+        } else if lower_name.starts_with("pg_catalog.") {
+            // Handle pg_catalog.table_name format for catalog tables
+            if let Some(table_name) = lower_name.strip_prefix("pg_catalog.") {
+                if let Some(catalog) = catalog::get_catalog() {
+                    if catalog.has_table(table_name) {
+                        Some(Self::CatalogTable(table_name.to_string()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         } else {
             match lower_name.as_str() {
                 "tagvalues" => Some(Self::TagValues),
@@ -46,7 +64,18 @@ impl VirtualTable {
                 "loggedalarms" => Some(Self::LoggedAlarms),
                 "taglist" => Some(Self::TagList),
                 "pg_stat_activity" => Some(Self::PgStatActivity),
-                _ => None,
+                _ => {
+                    // Check if it's a catalog table (direct name access)
+                    if let Some(catalog) = catalog::get_catalog() {
+                        if catalog.has_table(&lower_name) {
+                            Some(Self::CatalogTable(lower_name))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
             }
         }
     }
@@ -197,11 +226,37 @@ impl VirtualTable {
                 // Empty schema - FROM-less queries don't have predefined columns
                 // The actual columns will be determined by the SELECT expressions
             ],
+            Self::CatalogTable(table_name) => {
+                // Get schema from catalog manager
+                if let Some(catalog) = catalog::get_catalog() {
+                    if let Some(table) = catalog.get_table(table_name) {
+                        table.pg_schema.iter()
+                            .map(|(name, pg_type)| (name.as_str(), pg_type.clone()))
+                            .collect()
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                }
+            }
         }
     }
 
-    pub fn get_column_names(&self) -> Vec<&'static str> {
-        self.get_schema().into_iter().map(|(name, _)| name).collect()
+    pub fn get_column_names(&self) -> Vec<String> {
+        match self {
+            Self::CatalogTable(table_name) => {
+                if let Some(catalog) = catalog::get_catalog() {
+                    if let Some(table) = catalog.get_table(table_name) {
+                        return table.pg_schema.iter().map(|(name, _)| name.clone()).collect();
+                    }
+                }
+                vec![]
+            }
+            _ => {
+                self.get_schema().into_iter().map(|(name, _)| name.to_string()).collect()
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -210,7 +265,7 @@ impl VirtualTable {
     }
 
     pub fn has_column(&self, column: &str) -> bool {
-        self.get_column_names().contains(&column) || self.is_virtual_column(column)
+        self.get_column_names().iter().any(|c| c == column) || self.is_virtual_column(column)
     }
 
     pub fn is_virtual_column(&self, column: &str) -> bool {
@@ -222,7 +277,7 @@ impl VirtualTable {
     }
 
     pub fn is_selectable_column(&self, column: &str) -> bool {
-        self.get_column_names().contains(&column) && !self.is_virtual_column(column)
+        self.get_column_names().iter().any(|c| c == column) && !self.is_virtual_column(column)
     }
 }
 

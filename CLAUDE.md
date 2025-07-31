@@ -14,30 +14,34 @@ WinCC UA PostgreSQL Wire Protocol Server - A Rust-based PostgreSQL wire protocol
 cargo build --release
 
 # Run server (default port 5432)
-cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432
+cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --bind-addr 127.0.0.1:5432
 
 # Run with debug logging
-RUST_LOG=debug cargo run -- --graphql-url http://your-wincc-server:4000/graphql --debug --bind-addr 127.0.0.1:5433
+RUST_LOG=debug cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --debug --bind-addr 127.0.0.1:5433
 
 # Run with custom session extension interval (e.g., 5 minutes = 300 seconds)
-cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 --session-extension-interval 300
+cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --bind-addr 127.0.0.1:5432 --session-extension-interval 300
 
 # Run with TLS encryption enabled
-cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
+cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --bind-addr 127.0.0.1:5432 \
   --tls-enabled --tls-cert server.crt --tls-key server.key
 
 # Run with TLS and client certificate verification
-cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
+cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --bind-addr 127.0.0.1:5432 \
   --tls-enabled --tls-cert server.crt --tls-key server.key \
   --tls-ca-cert ca.crt --tls-require-client-cert
 
 # Run with quiet connection logging (suppress connection/auth messages)
-cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
+cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --bind-addr 127.0.0.1:5432 \
   --quiet-connections
 
 # Run with custom keep-alive interval (e.g., 60 seconds)
-cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127.0.0.1:5432 \
+cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --bind-addr 127.0.0.1:5432 \
   --keep-alive-interval 60
+
+# Run with catalog database support
+cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --bind-addr 127.0.0.1:5432 \
+  --catalog-db wincc_pg_catalog.db
 ```
 
 ### Testing
@@ -96,6 +100,7 @@ The server acts as a translation layer with DataFusion integration:
 - `activealarms` - Currently active alarms
 - `loggedalarms` - Historical alarm data
 - `tag_list` - Browse available tags in the system
+- **Catalog tables** - Custom tables loaded from SQLite database (via `--catalog-db` option)
 
 ### Query Flow
 
@@ -122,6 +127,12 @@ The server acts as a translation layer with DataFusion integration:
 - Supports Extended Query Protocol for prepared statements
 - Virtual tables defined in `create_table_function()` in `tables.rs`
 - Column type mapping handled in response formatting (e.g., PostgreSQL OIDs)
+- **Catalog system** - SQLite database can be loaded at startup to provide additional queryable tables
+  - Tables loaded from `wincc_pg_catalog.db` via `--catalog-db` option
+  - All catalog tables accessible via standard SQL queries with full DataFusion support
+  - Tables accessible with both direct names (`table_name`) and PostgreSQL-style prefixes (`pg_catalog.table_name`)
+  - Complex joins, aggregations, and filtering supported across catalog tables
+  - Automatic schema detection from SQLite table structure
 
 ## Important Notes
 

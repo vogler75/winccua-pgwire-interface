@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use pgwire::api::Type as PgType;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,7 +12,30 @@ use tracing_subscriber::registry::LookupSpan;
 // Global flag for SQL logging
 pub static LOG_SQL: AtomicBool = AtomicBool::new(false);
 
+/// Format PostgreSQL type for display
+fn format_pg_type(pg_type: &PgType) -> &'static str {
+    match *pg_type {
+        PgType::BOOL => "BOOLEAN",
+        PgType::INT2 => "SMALLINT",
+        PgType::INT4 => "INTEGER", 
+        PgType::INT8 => "BIGINT",
+        PgType::FLOAT4 => "REAL",
+        PgType::FLOAT8 => "DOUBLE PRECISION",
+        PgType::NUMERIC => "NUMERIC",
+        PgType::TEXT => "TEXT",
+        PgType::VARCHAR => "VARCHAR",
+        PgType::CHAR => "CHAR",
+        PgType::TIMESTAMP => "TIMESTAMP",
+        PgType::TIMESTAMPTZ => "TIMESTAMPTZ",
+        PgType::DATE => "DATE",
+        PgType::TIME => "TIME",
+        PgType::TIMETZ => "TIMETZ",
+        _ => "UNKNOWN",
+    }
+}
+
 mod auth;
+mod catalog;
 mod datafusion_handler;
 mod graphql;
 mod information_schema;
@@ -119,6 +143,10 @@ pub struct Args {
     /// Suppress connection and authentication log messages
     #[arg(long)]
     pub quiet_connections: bool,
+
+    /// Path to catalog SQLite database file (optional)
+    #[arg(long)]
+    pub catalog_db: Option<String>,
 }
 
 #[tokio::main]
@@ -174,6 +202,39 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Initialize catalog database if provided
+    if let Some(catalog_path) = &args.catalog_db {
+        info!("📚 Initializing catalog database from: {}", catalog_path);
+        match catalog::init_catalog(catalog_path) {
+            Ok(()) => {
+                let catalog = catalog::get_catalog().unwrap();
+                info!("✅ Catalog database initialized successfully with {} tables", 
+                      catalog.table_count());
+                
+                // Print detailed table information
+                for table_name in catalog.get_table_names() {
+                    if let Some(table) = catalog.get_table(&table_name) {
+                        info!("📋 Catalog table '{}' (accessible as 'pg_catalog.{}') - {} rows:", 
+                              table_name, table_name,
+                              table.data.iter().map(|b| b.num_rows()).sum::<usize>());
+                        
+                        // Print column information
+                        for (col_name, pg_type) in &table.pg_schema {
+                            info!("   └─ {} ({})", col_name, format_pg_type(pg_type));
+                        }
+                    } else {
+                        info!("📋 Catalog table: {} (schema unavailable)", table_name);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("⚠️  Failed to initialize catalog database: {}", e);
+                warn!("Server will continue without catalog tables");
+            }
+        }
+    } else {
+        info!("📚 No catalog database specified (use --catalog-db to enable)");
+    }
 
     // Setup TLS configuration if enabled
     let tls_config = if args.tls_enabled {

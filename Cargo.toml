@@ -42,6 +42,7 @@ base64 = "0.22"
 rand = "0.9"
 datafusion = "49.0.0"
 arrow = "55.2.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # TLS support
 tokio-rustls = "0.26"
