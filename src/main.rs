@@ -11,6 +11,7 @@ use tracing_subscriber::registry::LookupSpan;
 // Global flag for SQL logging
 pub static LOG_SQL: AtomicBool = AtomicBool::new(false);
 
+mod constants;
 mod auth;
 mod datafusion_handler;
 mod graphql;

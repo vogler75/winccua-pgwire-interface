@@ -10,21 +10,31 @@ pub enum VirtualTable {
     InformationSchemaTables,
     InformationSchemaColumns,
     PgStatActivity,
+    PgNamespace,
+    PgClass,
+    PgProc,
+    PgType,
+    PgConstraint,
     FromLessQuery, // For queries without FROM clause like SELECT 1, SELECT VERSION(), etc.
 }
 
 impl ToString for VirtualTable {
     fn to_string(&self) -> String {
         match self {
-            VirtualTable::TagValues => "tagvalues".to_string(),
-            VirtualTable::LoggedTagValues => "loggedtagvalues".to_string(),
-            VirtualTable::ActiveAlarms => "activealarms".to_string(),
-            VirtualTable::LoggedAlarms => "loggedalarms".to_string(),
-            VirtualTable::TagList => "taglist".to_string(),
-            VirtualTable::InformationSchemaTables => "information_schema.tables".to_string(),
-            VirtualTable::InformationSchemaColumns => "information_schema.columns".to_string(),
-            VirtualTable::PgStatActivity => "pg_stat_activity".to_string(),
-            VirtualTable::FromLessQuery => "dual".to_string(), // Use Oracle-style "dual" table name
+            VirtualTable::TagValues => crate::constants::TABLE_TAGVALUES.to_string(),
+            VirtualTable::LoggedTagValues => crate::constants::TABLE_LOGGED_TAG_VALUES.to_string(),
+            VirtualTable::ActiveAlarms => crate::constants::TABLE_ACTIVE_ALARMS.to_string(),
+            VirtualTable::LoggedAlarms => crate::constants::TABLE_LOGGED_ALARMS.to_string(),
+            VirtualTable::TagList => crate::constants::TABLE_TAG_LIST.to_string(),
+            VirtualTable::InformationSchemaTables => crate::constants::TABLE_INFORMATION_SCHEMA_TABLES.to_string(),
+            VirtualTable::InformationSchemaColumns => crate::constants::TABLE_INFORMATION_SCHEMA_COLUMNS.to_string(),
+            VirtualTable::PgStatActivity => crate::constants::TABLE_PG_STAT_ACTIVITY.to_string(),
+            VirtualTable::PgNamespace => crate::constants::TABLE_PG_NAMESPACE.to_string(),
+            VirtualTable::PgClass => crate::constants::TABLE_PG_CLASS.to_string(),
+            VirtualTable::PgProc => crate::constants::TABLE_PG_PROC.to_string(),
+            VirtualTable::PgType => crate::constants::TABLE_PG_TYPE.to_string(),
+            VirtualTable::PgConstraint => crate::constants::TABLE_PG_CONSTRAINT.to_string(),
+            VirtualTable::FromLessQuery => crate::constants::TABLE_DUAL.to_string(),
         }
     }
 }
@@ -38,14 +48,38 @@ impl VirtualTable {
                 Some("columns") => Some(Self::InformationSchemaColumns),
                 _ => None,
             }
+        } else if lower_name.starts_with("pg_catalog.") {
+            match lower_name.strip_prefix("pg_catalog.") {
+                Some("pg_namespace") => Some(Self::PgNamespace),
+                Some("pg_class") => Some(Self::PgClass),
+                Some("pg_proc") => Some(Self::PgProc),
+                Some("pg_type") => Some(Self::PgType),
+                Some("pg_constraint") => Some(Self::PgConstraint),
+                _ => None,
+            }
+        } else if lower_name.starts_with("public.") {
+            // Handle public schema qualified names
+            match lower_name.strip_prefix("public.") {
+                Some("tagvalues") => Some(Self::TagValues),
+                Some("loggedtagvalues") => Some(Self::LoggedTagValues),
+                Some("activealarms") => Some(Self::ActiveAlarms),
+                Some("loggedalarms") => Some(Self::LoggedAlarms),
+                Some("taglist") => Some(Self::TagList),
+                _ => None,
+            }
         } else {
             match lower_name.as_str() {
-                "tagvalues" => Some(Self::TagValues),
-                "loggedtagvalues" => Some(Self::LoggedTagValues),
-                "activealarms" => Some(Self::ActiveAlarms),
-                "loggedalarms" => Some(Self::LoggedAlarms),
-                "taglist" => Some(Self::TagList),
-                "pg_stat_activity" => Some(Self::PgStatActivity),
+                s if s == crate::constants::TABLE_TAGVALUES => Some(Self::TagValues),
+                s if s == crate::constants::TABLE_LOGGED_TAG_VALUES => Some(Self::LoggedTagValues),
+                s if s == crate::constants::TABLE_ACTIVE_ALARMS => Some(Self::ActiveAlarms),
+                s if s == crate::constants::TABLE_LOGGED_ALARMS => Some(Self::LoggedAlarms),
+                s if s == crate::constants::TABLE_TAG_LIST => Some(Self::TagList),
+                s if s == crate::constants::TABLE_PG_STAT_ACTIVITY => Some(Self::PgStatActivity),
+                s if s == crate::constants::TABLE_PG_NAMESPACE => Some(Self::PgNamespace),
+                s if s == crate::constants::TABLE_PG_CLASS => Some(Self::PgClass),
+                s if s == crate::constants::TABLE_PG_PROC => Some(Self::PgProc),
+                s if s == crate::constants::TABLE_PG_TYPE => Some(Self::PgType),
+                s if s == crate::constants::TABLE_PG_CONSTRAINT => Some(Self::PgConstraint),
                 _ => None,
             }
         }
@@ -192,6 +226,130 @@ impl VirtualTable {
                 ("datafusion_time", Type::INT8), // DataFusion execution time in ms
                 ("overall_time", Type::INT8),    // Overall query execution time in ms
                 ("last_alive_sent", Type::TIMESTAMP), // Last time keep-alive was sent
+            ],
+            Self::PgNamespace => vec![
+                ("oid", Type::INT8),      // Schema OID
+                ("nspname", Type::TEXT),  // Schema name
+                ("nspowner", Type::INT8), // Owner of the schema
+                ("nspacl", Type::TEXT),   // Access privileges (simplified as text)
+            ],
+            Self::PgClass => vec![
+                ("oid", Type::INT8),                // Table/relation OID
+                ("relname", Type::TEXT),            // Table/relation name
+                ("relnamespace", Type::INT8),       // Schema OID
+                ("reltype", Type::INT8),            // OID of row type
+                ("relowner", Type::INT8),           // Owner of the relation
+                ("relam", Type::INT8),              // Access method
+                ("relfilenode", Type::INT8),        // File node
+                ("reltablespace", Type::INT8),      // Tablespace
+                ("relpages", Type::INT8),           // Size in pages
+                ("reltuples", Type::FLOAT4),        // Number of rows
+                ("reltoastrelid", Type::INT8),      // TOAST table OID
+                ("relhasindex", Type::BOOL),        // Has indexes?
+                ("relisshared", Type::BOOL),        // Is shared across databases?
+                ("relpersistence", Type::TEXT),     // Persistence type
+                ("relkind", Type::TEXT),            // Type of relation
+                ("relnatts", Type::INT2),           // Number of user attributes
+                ("relchecks", Type::INT2),          // Number of CHECK constraints
+                ("relhasrules", Type::BOOL),        // Has rules?
+                ("relhastriggers", Type::BOOL),     // Has triggers?
+                ("relhassubclass", Type::BOOL),     // Has inheritance children?
+                ("relrowsecurity", Type::BOOL),     // Row security enabled?
+                ("relforcerowsecurity", Type::BOOL), // Force row security?
+                ("relispopulated", Type::BOOL),     // Is materialized view populated?
+                ("relreplident", Type::TEXT),       // Replica identity
+                ("relispartition", Type::BOOL),     // Is a partition?
+                ("relacl", Type::TEXT),             // Access privileges
+            ],
+            Self::PgProc => vec![
+                ("oid", Type::INT8),             // Function OID
+                ("proname", Type::TEXT),         // Function name
+                ("pronamespace", Type::INT8),    // Schema OID
+                ("proowner", Type::INT8),        // Owner
+                ("prolang", Type::INT8),         // Language OID
+                ("procost", Type::FLOAT4),       // Estimated execution cost
+                ("prorows", Type::FLOAT4),       // Estimated rows returned
+                ("provariadic", Type::INT8),     // Variadic parameter type
+                ("prosupport", Type::TEXT),      // Support function
+                ("prokind", Type::TEXT),         // Function kind
+                ("prosecdef", Type::BOOL),       // Security definer?
+                ("proleakproof", Type::BOOL),    // Is leak-proof?
+                ("proisstrict", Type::BOOL),     // Strict?
+                ("proretset", Type::BOOL),       // Returns a set?
+                ("proisagg", Type::BOOL),        // Is aggregate?
+                ("proiswindow", Type::BOOL),     // Is window function?
+                ("provolatile", Type::TEXT),     // Volatility
+                ("proparallel", Type::TEXT),     // Parallel safety
+                ("pronargs", Type::INT2),        // Number of input arguments
+                ("pronargdefaults", Type::INT2), // Number of default arguments
+                ("prorettype", Type::INT8),      // Return type OID
+                ("proargtypes", Type::TEXT),     // Argument types (simplified)
+                ("proallargtypes", Type::TEXT),  // All argument types
+                ("proargmodes", Type::TEXT),     // Argument modes
+                ("proargnames", Type::TEXT),     // Argument names
+                ("proargdefaults", Type::TEXT),  // Default expressions
+                ("protrftypes", Type::TEXT),     // Transform types
+                ("prosrc", Type::TEXT),          // Source code
+                ("probin", Type::TEXT),          // Binary location
+                ("proconfig", Type::TEXT),       // Configuration settings
+                ("proacl", Type::TEXT),          // Access privileges
+            ],
+            Self::PgType => vec![
+                ("oid", Type::INT8),             // Type OID
+                ("typname", Type::TEXT),         // Type name
+                ("typnamespace", Type::INT8),    // Schema OID
+                ("typowner", Type::INT8),        // Owner
+                ("typlen", Type::INT2),          // Length
+                ("typbyval", Type::BOOL),        // Pass by value?
+                ("typtype", Type::TEXT),         // Type category
+                ("typcategory", Type::TEXT),     // Category
+                ("typispreferred", Type::BOOL),  // Is preferred type?
+                ("typisdefined", Type::BOOL),    // Is defined?
+                ("typdelim", Type::TEXT),        // Delimiter
+                ("typrelid", Type::INT8),        // Related table OID
+                ("typelem", Type::INT8),         // Element type OID
+                ("typarray", Type::INT8),        // Array type OID
+                ("typinput", Type::TEXT),        // Input function
+                ("typoutput", Type::TEXT),       // Output function
+                ("typmodout", Type::TEXT),       // Type modifier output
+                ("typmodin", Type::TEXT),        // Type modifier input
+                ("typanalyze", Type::TEXT),      // Analyze function
+                ("typalign", Type::TEXT),        // Alignment
+                ("typstorage", Type::TEXT),      // Storage type
+                ("typnotnull", Type::BOOL),      // Not null?
+                ("typbasetype", Type::INT8),     // Base type OID
+                ("typtypmod", Type::INT4),       // Type modifier
+                ("typndims", Type::INT4),        // Number of dimensions
+                ("typcollation", Type::INT8),    // Collation OID
+                ("typdefault", Type::TEXT),      // Default value
+                ("typacl", Type::TEXT),          // Access privileges
+            ],
+            Self::PgConstraint => vec![
+                ("oid", Type::INT8),             // Constraint OID
+                ("conname", Type::TEXT),         // Constraint name
+                ("connamespace", Type::INT8),    // Schema OID
+                ("contype", Type::TEXT),         // Constraint type
+                ("condeferrable", Type::BOOL),   // Deferrable?
+                ("condeferred", Type::BOOL),     // Initially deferred?
+                ("convalidated", Type::BOOL),    // Validated?
+                ("conrelid", Type::INT8),        // Related table OID
+                ("contypid", Type::INT8),        // Related type OID
+                ("conind", Type::INT8),          // Related index OID
+                ("confrelid", Type::INT8),       // Foreign table OID
+                ("confupdtype", Type::TEXT),     // Foreign key update action
+                ("confdeltype", Type::TEXT),     // Foreign key delete action
+                ("confmatchtype", Type::TEXT),   // Foreign key match type
+                ("conislocal", Type::BOOL),      // Is local?
+                ("coninhcount", Type::INT2),     // Inheritance count
+                ("connoinherit", Type::BOOL),    // No inherit?
+                ("conkey", Type::TEXT),          // Constraint key columns
+                ("confkey", Type::TEXT),         // Foreign key columns
+                ("conpfeqop", Type::TEXT),       // PK = FK operator
+                ("conppeqop", Type::TEXT),       // PK = PK operator
+                ("conffeqop", Type::TEXT),       // FK = FK operator
+                ("conexclop", Type::TEXT),       // Exclusion operators
+                ("conbin", Type::TEXT),          // Check constraint expression
+                ("consrc", Type::TEXT),          // Check constraint source
             ],
             Self::FromLessQuery => vec![
                 // Empty schema - FROM-less queries don't have predefined columns

@@ -131,17 +131,40 @@ impl SqlHandler {
     }
 
     fn extract_table(select: &Select) -> Result<VirtualTable> {
-        if select.from.len() != 1 {
-            return Err(anyhow!("Expected exactly one table in FROM clause"));
+        if select.from.is_empty() {
+            return Err(anyhow!("No tables in FROM clause"));
         }
 
-        let table_name = match &select.from[0].relation {
+        // Handle single table case
+        if select.from.len() == 1 && select.from[0].joins.is_empty() {
+            let table_name = match &select.from[0].relation {
+                datafusion::sql::sqlparser::ast::TableFactor::Table { name, .. } => {
+                    // Extract the actual identifier value without quotes
+                    // ObjectNamePart has a to_string() that includes quotes, but we need the raw value
+                    let parts: Vec<String> = name.0.iter().map(|part| {
+                        let part_str = part.to_string();
+                        // Remove quotes if present (handles both " and ` quotes)
+                        if (part_str.starts_with('"') && part_str.ends_with('"')) ||
+                           (part_str.starts_with('`') && part_str.ends_with('`')) {
+                            part_str[1..part_str.len()-1].to_string()
+                        } else {
+                            part_str
+                        }
+                    }).collect();
+                    parts.join(".")
+                }
+                _ => return Err(anyhow!("Only simple table names are supported")),
+            };
+
+            return VirtualTable::from_name(&table_name)
+                .ok_or_else(|| anyhow!("Unknown table: {}", table_name));
+        }
+
+        // Handle JOIN queries - extract primary table (first in FROM clause)
+        let primary_table_name = match &select.from[0].relation {
             datafusion::sql::sqlparser::ast::TableFactor::Table { name, .. } => {
-                // Extract the actual identifier value without quotes
-                // ObjectNamePart has a to_string() that includes quotes, but we need the raw value
                 let parts: Vec<String> = name.0.iter().map(|part| {
                     let part_str = part.to_string();
-                    // Remove quotes if present (handles both " and ` quotes)
                     if (part_str.starts_with('"') && part_str.ends_with('"')) ||
                        (part_str.starts_with('`') && part_str.ends_with('`')) {
                         part_str[1..part_str.len()-1].to_string()
@@ -151,17 +174,24 @@ impl SqlHandler {
                 }).collect();
                 parts.join(".")
             }
-            _ => return Err(anyhow!("Only simple table names are supported")),
+            _ => return Err(anyhow!("Only simple table names are supported in JOINs")),
         };
 
-        VirtualTable::from_name(&table_name)
-            .ok_or_else(|| anyhow!("Unknown table: {}", table_name))
+        // For JOIN queries involving pg_catalog tables, we'll route to a special handler
+        // For now, route based on the primary table
+        VirtualTable::from_name(&primary_table_name)
+            .ok_or_else(|| anyhow!("Unknown table: {}", primary_table_name))
     }
 
     fn extract_columns(select: &Select, table: &VirtualTable) -> Result<(Vec<String>, std::collections::HashMap<String, String>)> {
         let mut columns = Vec::new();
         let mut column_mappings = std::collections::HashMap::new();
-        let is_datafusion_table = matches!(table, VirtualTable::TagValues | VirtualTable::TagList | VirtualTable::LoggedTagValues | VirtualTable::ActiveAlarms | VirtualTable::LoggedAlarms | VirtualTable::PgStatActivity);
+        let is_datafusion_table = matches!(table, 
+            VirtualTable::TagValues | VirtualTable::TagList | VirtualTable::LoggedTagValues | 
+            VirtualTable::ActiveAlarms | VirtualTable::LoggedAlarms | VirtualTable::PgStatActivity |
+            VirtualTable::PgNamespace | VirtualTable::PgClass | VirtualTable::PgProc | 
+            VirtualTable::PgType | VirtualTable::PgConstraint
+        );
 
         for item in &select.projection {
             match item {
@@ -224,8 +254,18 @@ impl SqlHandler {
     fn extract_filters(select: &Select, table: &VirtualTable) -> Result<Vec<ColumnFilter>> {
         let mut filters = Vec::new();
 
-        if let Some(where_clause) = &select.selection {
-            Self::extract_filters_from_expr(where_clause, table, &mut filters)?;
+        // For DataFusion tables, we don't need to extract filters since DataFusion handles complex WHERE clauses
+        let is_datafusion_table = matches!(table, 
+            VirtualTable::TagValues | VirtualTable::TagList | VirtualTable::LoggedTagValues | 
+            VirtualTable::ActiveAlarms | VirtualTable::LoggedAlarms | VirtualTable::PgStatActivity |
+            VirtualTable::PgNamespace | VirtualTable::PgClass | VirtualTable::PgProc | 
+            VirtualTable::PgType | VirtualTable::PgConstraint
+        );
+
+        if !is_datafusion_table {
+            if let Some(where_clause) = &select.selection {
+                Self::extract_filters_from_expr(where_clause, table, &mut filters)?;
+            }
         }
 
         Ok(filters)

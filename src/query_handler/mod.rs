@@ -3,6 +3,12 @@ pub mod active_alarms_handler;
 pub mod logged_alarms_handler;
 pub mod logged_tag_values_handler;
 pub mod pg_stat_activity_handler;
+pub mod pg_namespace_handler;
+pub mod pg_class_handler;
+pub mod pg_proc_handler;
+pub mod pg_type_handler;
+pub mod pg_constraint_handler;
+pub mod pg_functions_handler;
 pub mod tag_list_handler;
 pub mod tag_values_handler;
 
@@ -273,6 +279,21 @@ impl QueryHandler {
                         crate::query_handler::pg_stat_activity_handler::handle_pg_stat_activity_query(
                             sql, session, session_manager.clone()
                         ).await
+                    }
+                    VirtualTable::PgNamespace => {
+                        crate::query_handler::pg_namespace_handler::handle_pg_namespace_query(sql).await
+                    }
+                    VirtualTable::PgClass => {
+                        crate::query_handler::pg_class_handler::handle_pg_class_query(sql).await
+                    }
+                    VirtualTable::PgProc => {
+                        crate::query_handler::pg_proc_handler::handle_pg_proc_query(sql).await
+                    }
+                    VirtualTable::PgType => {
+                        crate::query_handler::pg_type_handler::handle_pg_type_query(sql).await
+                    }
+                    VirtualTable::PgConstraint => {
+                        crate::query_handler::pg_constraint_handler::handle_pg_constraint_query(sql).await
                     }
                     VirtualTable::FromLessQuery => {
                         Self::execute_from_less_query(sql, &query_info, session).await

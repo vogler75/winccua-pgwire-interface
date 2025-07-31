@@ -42,10 +42,11 @@ cargo run -- --graphql-url http://your-wincc-server:4000/graphql --bind-addr 127
 
 ### Testing
 ```bash
-# Run integration tests (from /tests/ directory)
-./test_psql.sh
-./test_basic_queries.sh
-python test_datagrip.py
+# For testing with a real WinCC GraphQL server:
+# GraphQL URL: http://DESKTOP-KHLB071:4000/graphql
+# Username: username1
+# Password: password1
+cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --bind-addr 127.0.0.1:5433
 ```
 
 ### Environment Setup

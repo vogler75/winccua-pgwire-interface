@@ -287,7 +287,7 @@ impl SessionManager {
             connection_id,
             session_id: Some(session_id.to_string()),
             username: Some(session.username.clone()),
-            database_name: Some("winccua".to_string()),
+            database_name: Some(crate::constants::DATABASE_NAME.to_string()),
             client_addr,
             application_name: Some(application_name),
             backend_start: Utc::now(),

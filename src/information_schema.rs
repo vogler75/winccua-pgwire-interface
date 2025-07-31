@@ -13,19 +13,19 @@ pub fn handle_information_schema_query(query_info: &QueryInfo) -> Result<crate::
 
 fn generate_tables_response(query_info: &QueryInfo) -> Result<String> {
     let all_tables = vec![
-        "tagvalues",
-        "loggedtagvalues",
-        "activealarms",
-        "loggedalarms",
-        "taglist",
+        crate::constants::TABLE_TAGVALUES,
+        crate::constants::TABLE_LOGGED_TAG_VALUES,
+        crate::constants::TABLE_ACTIVE_ALARMS,
+        crate::constants::TABLE_LOGGED_ALARMS,
+        crate::constants::TABLE_TAG_LIST,
     ];
 
     let mut rows: Vec<HashMap<String, String>> = all_tables
         .into_iter()
         .map(|table_name| {
             let mut row = HashMap::new();
-            row.insert("table_catalog".to_string(), "winccua".to_string());
-            row.insert("table_schema".to_string(), "public".to_string());
+            row.insert("table_catalog".to_string(), crate::constants::DATABASE_NAME.to_string());
+            row.insert("table_schema".to_string(), crate::constants::SCHEMA_PUBLIC.to_string());
             row.insert("table_name".to_string(), table_name.to_string());
             row.insert("table_type".to_string(), "VIEW".to_string());
             row.insert("self_referencing_column_name".to_string(), "NULL".to_string());
@@ -74,11 +74,11 @@ fn generate_tables_response(query_info: &QueryInfo) -> Result<String> {
 
 fn generate_columns_response(query_info: &QueryInfo) -> Result<String> {
     let table_columns = vec![
-        ("tagvalues", vec!["tag_name", "timestamp", "numeric_value", "string_value", "quality"]),
-        ("loggedtagvalues", vec!["tag_name", "timestamp", "numeric_value", "string_value", "quality"]),
-        ("activealarms", vec!["name", "instance_id", "raise_time", "state", "priority"]),
-        ("loggedalarms", vec!["name", "instance_id", "raise_time", "modification_time", "state", "priority"]),
-        ("taglist", vec!["tag_name", "display_name", "object_type", "data_type"]),
+        (crate::constants::TABLE_TAGVALUES, vec!["tag_name", "timestamp", "numeric_value", "string_value", "quality"]),
+        (crate::constants::TABLE_LOGGED_TAG_VALUES, vec!["tag_name", "timestamp", "numeric_value", "string_value", "quality"]),
+        (crate::constants::TABLE_ACTIVE_ALARMS, vec!["name", "instance_id", "raise_time", "state", "priority"]),
+        (crate::constants::TABLE_LOGGED_ALARMS, vec!["name", "instance_id", "raise_time", "modification_time", "state", "priority"]),
+        (crate::constants::TABLE_TAG_LIST, vec!["tag_name", "display_name", "object_type", "data_type"]),
     ];
 
     let mut rows: Vec<HashMap<String, String>> = Vec::new();
@@ -91,8 +91,8 @@ fn generate_columns_response(query_info: &QueryInfo) -> Result<String> {
                 _ => "character varying",
             };
             let mut row = HashMap::new();
-            row.insert("table_catalog".to_string(), "winccua".to_string());
-            row.insert("table_schema".to_string(), "public".to_string());
+            row.insert("table_catalog".to_string(), crate::constants::DATABASE_NAME.to_string());
+            row.insert("table_schema".to_string(), crate::constants::SCHEMA_PUBLIC.to_string());
             row.insert("table_name".to_string(), table_name.to_string());
             row.insert("column_name".to_string(), column_name.to_string());
             row.insert("ordinal_position".to_string(), (i + 1).to_string());
@@ -116,8 +116,8 @@ fn generate_columns_response(query_info: &QueryInfo) -> Result<String> {
             row.insert("domain_catalog".to_string(), "NULL".to_string());
             row.insert("domain_schema".to_string(), "NULL".to_string());
             row.insert("domain_name".to_string(), "NULL".to_string());
-            row.insert("udt_catalog".to_string(), "winccua".to_string());
-            row.insert("udt_schema".to_string(), "pg_catalog".to_string());
+            row.insert("udt_catalog".to_string(), crate::constants::DATABASE_NAME.to_string());
+            row.insert("udt_schema".to_string(), crate::constants::SCHEMA_PG_CATALOG.to_string());
             row.insert("udt_name".to_string(), "varchar".to_string());
             row.insert("scope_catalog".to_string(), "NULL".to_string());
             row.insert("scope_schema".to_string(), "NULL".to_string());
