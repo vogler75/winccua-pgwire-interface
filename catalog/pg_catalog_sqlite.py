@@ -126,7 +126,7 @@ def create_catalog_tables(conn: sqlite3.Connection):
     
     # Create pg_namespace (schemas)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pg_namespace (
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_namespace" (
             oid INTEGER PRIMARY KEY,
             nspname TEXT NOT NULL,
             nspowner INTEGER,
@@ -136,7 +136,7 @@ def create_catalog_tables(conn: sqlite3.Connection):
     
     # Create pg_class (tables, indexes, sequences, views)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pg_class (
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_class" (
             oid INTEGER PRIMARY KEY,
             relname TEXT NOT NULL,
             relnamespace INTEGER,
@@ -161,7 +161,7 @@ def create_catalog_tables(conn: sqlite3.Connection):
     
     # Create pg_attribute (table columns)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pg_attribute (
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_attribute" (
             attrelid INTEGER NOT NULL,
             attname TEXT NOT NULL,
             atttypid INTEGER NOT NULL,
@@ -186,7 +186,7 @@ def create_catalog_tables(conn: sqlite3.Connection):
     
     # Create pg_type (data types)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pg_type (
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_type" (
             oid INTEGER PRIMARY KEY,
             typname TEXT NOT NULL,
             typnamespace INTEGER,
@@ -223,7 +223,7 @@ def create_catalog_tables(conn: sqlite3.Connection):
     
     # Create pg_proc (functions and procedures)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pg_proc (
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_proc" (
             oid INTEGER PRIMARY KEY,
             proname TEXT NOT NULL,
             pronamespace INTEGER,
@@ -257,7 +257,7 @@ def create_catalog_tables(conn: sqlite3.Connection):
     
     # Create pg_constraint (constraints)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pg_constraint (
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_constraint" (
             oid INTEGER PRIMARY KEY,
             conname TEXT NOT NULL,
             connamespace INTEGER,
@@ -288,12 +288,36 @@ def create_catalog_tables(conn: sqlite3.Connection):
     
     # Create pg_description (comments on database objects)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pg_description (
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_description" (
             objoid INTEGER NOT NULL,
             classoid INTEGER NOT NULL,
             objsubid INTEGER NOT NULL,
             description TEXT,
             PRIMARY KEY (objoid, classoid, objsubid)
+        )
+    """)
+    
+    # Create pg_database (available databases)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_database" (
+            oid INTEGER PRIMARY KEY,
+            datname TEXT NOT NULL,
+            datdba INTEGER NOT NULL,
+            encoding INTEGER NOT NULL,
+            datlocprovider TEXT NOT NULL,
+            datistemplate BOOLEAN NOT NULL,
+            datallowconn BOOLEAN NOT NULL,
+            dathasloginevt BOOLEAN NOT NULL,
+            datconnlimit INTEGER NOT NULL,
+            datfrozenxid INTEGER NOT NULL,
+            datminmxid INTEGER NOT NULL,
+            dattablespace INTEGER NOT NULL,
+            datcollate TEXT NOT NULL,
+            datctype TEXT NOT NULL,
+            datlocale TEXT,
+            daticurules TEXT,
+            datcollversion TEXT,
+            datacl TEXT
         )
     """)
     
@@ -305,7 +329,7 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     
     # Insert public schema
     cursor.execute("""
-        INSERT INTO pg_namespace (oid, nspname, nspowner, nspacl)
+        INSERT INTO "pg_catalog.pg_namespace" (oid, nspname, nspowner, nspacl)
         VALUES (2200, 'public', 10, NULL)
     """)
     
@@ -315,7 +339,7 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     # Insert data types
     for type_name, (oid, name, size, align) in PG_TYPE_MAPPINGS.items():
         cursor.execute("""
-            INSERT INTO pg_type (oid, typname, typnamespace, typlen, typbyval, 
+            INSERT INTO "pg_catalog.pg_type" (oid, typname, typnamespace, typlen, typbyval, 
                                typtype, typcategory, typalign, typstorage)
             VALUES (?, ?, 11, ?, ?, 'b', 'U', ?, 'p')
         """, (oid, name, size, size > 0 and size <= 8, align))
@@ -325,14 +349,14 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     for table_name, table_info in WINCC_TABLES.items():
         # Insert table into pg_class
         cursor.execute("""
-            INSERT INTO pg_class (oid, relname, relnamespace, reltype, relkind, 
+            INSERT INTO "pg_catalog.pg_class" (oid, relname, relnamespace, reltype, relkind, 
                                 relnatts, relhasindex, relisshared)
             VALUES (?, ?, 2200, 0, 'r', ?, false, false)
         """, (table_oid, table_name, len(table_info['columns'])))
         
         # Insert table description
         cursor.execute("""
-            INSERT INTO pg_description (objoid, classoid, objsubid, description)
+            INSERT INTO "pg_catalog.pg_description" (objoid, classoid, objsubid, description)
             VALUES (?, 1259, 0, ?)
         """, (table_oid, table_info['description']))
         
@@ -341,14 +365,14 @@ def populate_catalog_tables(conn: sqlite3.Connection):
             type_oid, _, type_len, _ = PG_TYPE_MAPPINGS[col_type]
             
             cursor.execute("""
-                INSERT INTO pg_attribute (attrelid, attname, atttypid, attlen, 
+                INSERT INTO "pg_catalog.pg_attribute" (attrelid, attname, atttypid, attlen, 
                                         attnum, attnotnull, attisdropped)
                 VALUES (?, ?, ?, ?, ?, false, false)
             """, (table_oid, col_name, type_oid, type_len, attnum))
             
             # Insert column description
             cursor.execute("""
-                INSERT INTO pg_description (objoid, classoid, objsubid, description)
+                INSERT INTO "pg_catalog.pg_description" (objoid, classoid, objsubid, description)
                 VALUES (?, 1259, ?, ?)
             """, (table_oid, attnum, col_desc))
         
@@ -356,13 +380,31 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     
     # Insert some sample procedures
     cursor.execute("""
-        INSERT INTO pg_proc (oid, proname, pronamespace, prorettype, pronargs, 
+        INSERT INTO "pg_catalog.pg_proc" (oid, proname, pronamespace, prorettype, pronargs, 
                            proargtypes, prosrc, provolatile)
         VALUES 
             (30000, 'get_current_tags', 2200, 25, 0, '', 
              'SELECT * FROM tagvalues', 'v'),
             (30001, 'get_active_alarms', 2200, 25, 0, '', 
              'SELECT * FROM activealarms WHERE state = ''active''', 'v')
+    """)
+    
+    # Insert database information
+    cursor.execute("""
+        INSERT INTO "pg_catalog.pg_database" (
+            oid, datname, datdba, encoding, datlocprovider, datistemplate, 
+            datallowconn, dathasloginevt, datconnlimit, datfrozenxid, datminmxid, 
+            dattablespace, datcollate, datctype, datlocale, daticurules, 
+            datcollversion, datacl
+        ) VALUES 
+            (16384, 'postgres', 10, 6, 'c', false, true, false, -1, 479, 1, 
+             1663, 'en_US.UTF-8', 'en_US.UTF-8', NULL, NULL, NULL, NULL),
+            (1, 'template1', 10, 6, 'c', true, true, false, -1, 479, 1, 
+             1663, 'en_US.UTF-8', 'en_US.UTF-8', NULL, NULL, NULL, NULL),
+            (16385, 'template0', 10, 6, 'c', true, false, false, -1, 479, 1, 
+             1663, 'en_US.UTF-8', 'en_US.UTF-8', NULL, NULL, NULL, NULL),
+            (16386, 'wincc', 10, 6, 'c', false, true, false, -1, 479, 1, 
+             1663, 'en_US.UTF-8', 'en_US.UTF-8', NULL, NULL, NULL, NULL)
     """)
     
     conn.commit()
@@ -389,7 +431,7 @@ def main():
         print("\nCreated catalog tables:")
         cursor.execute("""
             SELECT name FROM sqlite_master 
-            WHERE type='table' AND name LIKE 'pg_%'
+            WHERE type='table' AND name LIKE 'pg_catalog.pg_%'
             ORDER BY name
         """)
         for row in cursor.fetchall():
@@ -398,8 +440,8 @@ def main():
         print("\nWinCC tables in pg_class:")
         cursor.execute("""
             SELECT c.relname, d.description
-            FROM pg_class c
-            LEFT JOIN pg_description d ON c.oid = d.objoid AND d.objsubid = 0
+            FROM "pg_catalog.pg_class" c
+            LEFT JOIN "pg_catalog.pg_description" d ON c.oid = d.objoid AND d.objsubid = 0
             WHERE c.relnamespace = 2200 AND c.relkind = 'r'
             ORDER BY c.relname
         """)

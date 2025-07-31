@@ -33,6 +33,10 @@ impl SqlHandler {
         let statement = &ast[0];
         match statement {
             Statement::Query(query) => {
+                // Check if this is a complex query that should be handled by DataFusion
+                if Self::is_complex_query(query) {
+                    return Err(anyhow!("Complex query detected - should be routed to DataFusion"));
+                }
                 let query_info = Self::parse_select_query(query)?;
                 Ok(SqlResult::Query(query_info))
             }
@@ -41,6 +45,75 @@ impl SqlHandler {
                 Self::handle_set_statement(statement)
             }
             _ => Err(anyhow!("Only SELECT and SET statements are supported")),
+        }
+    }
+
+    fn is_complex_query(query: &Query) -> bool {
+        match &*query.body {
+            SetExpr::Select(select) => {
+                // Check for JOINs
+                if !select.from.is_empty() && !select.from[0].joins.is_empty() {
+                    debug!("Complex query detected: contains JOINs");
+                    return true;
+                }
+                
+                // Check for complex expressions in SELECT (like literals, functions, etc)
+                for item in &select.projection {
+                    match item {
+                        SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                            if Self::is_complex_expression(expr) {
+                                debug!("Complex query detected: contains complex expressions");
+                                return true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                
+                // Check for GROUP BY
+                // GroupByExpr is an enum, need to check if it's not empty/simple
+                match &select.group_by {
+                    datafusion::sql::sqlparser::ast::GroupByExpr::All(_) => {
+                        debug!("Complex query detected: contains GROUP BY ALL");
+                        return true;
+                    }
+                    datafusion::sql::sqlparser::ast::GroupByExpr::Expressions(exprs, _) => {
+                        if !exprs.is_empty() {
+                            debug!("Complex query detected: contains GROUP BY");
+                            return true;
+                        }
+                    }
+                }
+                
+                // Check for HAVING
+                if select.having.is_some() {
+                    debug!("Complex query detected: contains HAVING");
+                    return true;
+                }
+                
+                // Check for DISTINCT
+                if select.distinct.is_some() {
+                    debug!("Complex query detected: contains DISTINCT");
+                    return true;
+                }
+                
+                false
+            }
+            _ => true, // Non-SELECT queries are considered complex
+        }
+    }
+    
+    fn is_complex_expression(expr: &Expr) -> bool {
+        match expr {
+            Expr::Identifier(_) => false, // Simple column reference
+            Expr::CompoundIdentifier(_) => false, // Table.column reference
+            Expr::Value(_) => true, // Literal values like 'MATERIALIZED VIEW'
+            Expr::Function(_) => true, // Function calls
+            Expr::BinaryOp { .. } => true, // Binary operations
+            Expr::UnaryOp { .. } => true, // Unary operations
+            Expr::Cast { .. } => true, // Type casts
+            Expr::Case { .. } => true, // CASE expressions
+            _ => true, // Anything else is considered complex
         }
     }
 

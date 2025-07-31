@@ -5,6 +5,18 @@ use std::time::Instant;
 use tracing::debug;
 use crate::catalog;
 
+/// Replace schema-qualified table names with underscore versions to avoid DataFusion schema parsing
+fn normalize_schema_qualified_tables(sql: &str) -> String {
+    // Use regex to find pg_catalog.table_name patterns and replace dots with underscores
+    use regex::Regex;
+    
+    // Pattern to match pg_catalog.table_name (case insensitive)
+    let re = Regex::new(r"(?i)\bpg_catalog\.([a-zA-Z_][a-zA-Z0-9_]*)\b").unwrap();
+    
+    // Replace pg_catalog.table_name with pg_catalog_table_name
+    re.replace_all(sql, "pg_catalog_$1").to_string()
+}
+
 pub async fn execute_query(
     sql: &str,
     batch: RecordBatch,
@@ -26,6 +38,10 @@ pub async fn execute_query(
 /// Execute a complex SQL query with catalog tables support
 pub async fn execute_query_with_catalog(sql: &str) -> Result<(Vec<RecordBatch>, u64)> {
     let start_time = Instant::now();
+    
+    // Pre-process SQL to normalize schema-qualified table names
+    let processed_sql = normalize_schema_qualified_tables(sql);
+    debug!("🔧 Processed SQL: {} -> {}", sql, processed_sql);
     
     let ctx = SessionContext::new();
     
@@ -59,19 +75,25 @@ pub async fn execute_query_with_catalog(sql: &str) -> Result<(Vec<RecordBatch>, 
                         RecordBatch::try_new(schema, columns)?
                     };
                     
-                    // Register with direct name
-                    ctx.register_batch(&table_name, combined_batch.clone())?;
+                    // Register with normalized name (dots replaced with underscores)
+                    let normalized_name = table_name.replace('.', "_");
+                    debug!("📋 Registering catalog table as: {}", normalized_name);
+                    ctx.register_batch(&normalized_name, combined_batch.clone())?;
                     
-                    // Also register with pg_catalog prefix
-                    let pg_catalog_name = format!("pg_catalog.{}", table_name);
-                    debug!("📋 Also registering as '{}'", pg_catalog_name);
-                    ctx.register_batch(&pg_catalog_name, combined_batch)?;
+                    // If the table name starts with pg_catalog., also register without the prefix
+                    // for backward compatibility (e.g., both "pg_catalog.pg_class" and pg_class)
+                    if table_name.starts_with("pg_catalog.") {
+                        if let Some(short_name) = table_name.strip_prefix("pg_catalog.") {
+                            debug!("📋 Also registering '{}' as '{}'", table_name, short_name);
+                            ctx.register_batch(short_name, combined_batch)?;
+                        }
+                    }
                 }
             }
         }
     }
     
-    let df = ctx.sql(sql).await?;
+    let df = ctx.sql(&processed_sql).await?;
     let results = df.collect().await?;
     
     let elapsed_ms = start_time.elapsed().as_millis() as u64;
@@ -122,13 +144,19 @@ pub async fn execute_mixed_query(
                         RecordBatch::try_new(schema, columns)?
                     };
                     
-                    // Register with direct name
-                    ctx.register_batch(&table_name, combined_batch.clone())?;
+                    // Register with normalized name (dots replaced with underscores)
+                    let normalized_name = table_name.replace('.', "_");
+                    debug!("📋 Registering catalog table as: {}", normalized_name);
+                    ctx.register_batch(&normalized_name, combined_batch.clone())?;
                     
-                    // Also register with pg_catalog prefix
-                    let pg_catalog_name = format!("pg_catalog.{}", table_name);
-                    debug!("📋 Also registering as '{}'", pg_catalog_name);
-                    ctx.register_batch(&pg_catalog_name, combined_batch)?;
+                    // If the table name starts with pg_catalog., also register without the prefix
+                    // for backward compatibility (e.g., both "pg_catalog.pg_class" and pg_class)
+                    if table_name.starts_with("pg_catalog.") {
+                        if let Some(short_name) = table_name.strip_prefix("pg_catalog.") {
+                            debug!("📋 Also registering '{}' as '{}'", table_name, short_name);
+                            ctx.register_batch(short_name, combined_batch)?;
+                        }
+                    }
                 }
             }
         }

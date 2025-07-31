@@ -1,0 +1,22 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running `/Users/vogler/Workspace/winccua-pgwire-interface/target/debug/winccua-pgwire-protocol --graphql-url 'http://DESKTOP-KHLB071:4000/graphql' --bind-addr '127.0.0.1:5434' --catalog-db catalog/wincc_pg_catalog.db --debug`
+2025-07-31T12:41:21.984Z  INFO winccua_pgwire_protocol                 : Starting WinCC UA PostgreSQL Wire Protocol Server
+2025-07-31T12:41:21.984Z  INFO winccua_pgwire_protocol                 : Binding to: 127.0.0.1:5434
+2025-07-31T12:41:21.984Z  INFO winccua_pgwire_protocol                 : GraphQL URL: http://DESKTOP-KHLB071:4000/graphql
+2025-07-31T12:41:21.984Z  INFO winccua_pgwire_protocol                 : Session extension interval: 600 seconds
+2025-07-31T12:41:21.984Z  INFO winccua_pgwire_protocol                 : Keep-alive interval: 30 seconds
+2025-07-31T12:41:21.984Z  INFO winccua_pgwire_protocol                 : SQL query logging: DEBUG level only
+2025-07-31T12:41:21.984Z  INFO winccua_pgwire_protocol                 : Validating GraphQL connection to: http://DESKTOP-KHLB071:4000/graphql
+2025-07-31T12:41:21.986Z DEBUG graphql::client                         : 🚀 Executing GraphQL query: introspection
+2025-07-31T12:41:21.986Z DEBUG graphql::client                         : 📄 Query: { __schema { queryType { name } } }
+2025-07-31T12:41:21.986Z DEBUG graphql::client                         : 🔧 Variables (JSON): {}
+2025-07-31T12:41:21.993Z DEBUG graphql::client                         : 📥 GraphQL response: {"data":{"__schema":{"queryType":{"name":"Query"}}}}
+
+2025-07-31T12:41:21.994Z  INFO winccua_pgwire_protocol                 : ✅ GraphQL connection validated successfully
+2025-07-31T12:41:21.994Z  INFO winccua_pgwire_protocol                 : 📚 Initializing catalog database from: catalog/wincc_pg_catalog.db
+2025-07-31T12:41:21.994Z  INFO catalog                                 : 📚 Loading catalog database from: catalog/wincc_pg_catalog.db
+2025-07-31T12:41:21.994Z  WARN catalog                                 : ⚠️  Catalog database file not found: catalog/wincc_pg_catalog.db
+2025-07-31T12:41:21.994Z  INFO winccua_pgwire_protocol                 : ✅ Catalog database initialized successfully with 0 tables
+2025-07-31T12:41:21.994Z  INFO winccua_pgwire_protocol                 : 🐘 Starting PostgreSQL-compatible server
+2025-07-31T12:41:21.994Z  INFO pg_protocol                             : 🐘 PostgreSQL-like server listening on 127.0.0.1:5434
+2025-07-31T12:41:21.994Z DEBUG pg_protocol                             : 🎧 Waiting for new connections...

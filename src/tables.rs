@@ -41,21 +41,6 @@ impl VirtualTable {
                 Some("columns") => Some(Self::InformationSchemaColumns),
                 _ => None,
             }
-        } else if lower_name.starts_with("pg_catalog.") {
-            // Handle pg_catalog.table_name format for catalog tables
-            if let Some(table_name) = lower_name.strip_prefix("pg_catalog.") {
-                if let Some(catalog) = catalog::get_catalog() {
-                    if catalog.has_table(table_name) {
-                        Some(Self::CatalogTable(table_name.to_string()))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
         } else {
             match lower_name.as_str() {
                 "tagvalues" => Some(Self::TagValues),
@@ -65,10 +50,28 @@ impl VirtualTable {
                 "taglist" => Some(Self::TagList),
                 "pg_stat_activity" => Some(Self::PgStatActivity),
                 _ => {
-                    // Check if it's a catalog table (direct name access)
+                    // Check if it's a catalog table (with or without schema prefix)
                     if let Some(catalog) = catalog::get_catalog() {
+                        // First try exact match
                         if catalog.has_table(&lower_name) {
                             Some(Self::CatalogTable(lower_name))
+                        } 
+                        // Then try with pg_catalog prefix if not already present
+                        else if !lower_name.starts_with("pg_catalog.") {
+                            let prefixed_name = format!("pg_catalog.{}", lower_name);
+                            if catalog.has_table(&prefixed_name) {
+                                Some(Self::CatalogTable(prefixed_name))
+                            } else {
+                                None
+                            }
+                        }
+                        // Handle the case where user queries pg_catalog.table_name directly
+                        else if lower_name.starts_with("pg_catalog.") {
+                            if catalog.has_table(&lower_name) {
+                                Some(Self::CatalogTable(lower_name))
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }

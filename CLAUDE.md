@@ -41,7 +41,7 @@ cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --bind-addr 127.0
 
 # Run with catalog database support
 cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --bind-addr 127.0.0.1:5432 \
-  --catalog-db wincc_pg_catalog.db
+  --catalog-db catalog/wincc_pg_catalog.db
 ```
 
 ### Testing
@@ -133,6 +133,28 @@ The server acts as a translation layer with DataFusion integration:
   - Tables accessible with both direct names (`table_name`) and PostgreSQL-style prefixes (`pg_catalog.table_name`)
   - Complex joins, aggregations, and filtering supported across catalog tables
   - Automatic schema detection from SQLite table structure
+
+## Catalog Database Management
+
+The `/catalog/` directory contains tools for managing the PostgreSQL catalog database:
+
+### Catalog Database Setup
+```bash
+# Generate/regenerate the catalog database
+cd catalog
+python pg_catalog_sqlite.py
+
+# The generated database is used by the server:
+cargo run -- --graphql-url http://DESKTOP-KHLB071:4000/graphql --catalog-db catalog/wincc_pg_catalog.db
+```
+
+### Catalog System
+- **`pg_catalog_sqlite.py`** - Python script that creates SQLite database with PostgreSQL system catalog tables
+- **`wincc_pg_catalog.db`** - SQLite database containing PostgreSQL metadata tables (pg_class, pg_attribute, pg_type, etc.)
+- Provides metadata about WinCC virtual tables (tagvalues, activealarms, etc.) in standard PostgreSQL catalog format
+- Enables SQL introspection queries that SQL clients expect (DESCRIBE, SHOW TABLES, etc.)
+- Tables include: pg_namespace, pg_class, pg_attribute, pg_type, pg_proc, pg_constraint, pg_description, pg_database
+- Supports PostgreSQL-compatible metadata queries for tools like DataGrip, pgAdmin, etc.
 
 ## Important Notes
 
