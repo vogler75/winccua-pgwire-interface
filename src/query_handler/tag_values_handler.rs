@@ -6,11 +6,11 @@ use std::time::Instant;
 use tracing::{debug, info};
 
 impl QueryHandler {
-    pub(super) async fn fetch_tag_values_data(
+    pub async fn fetch_tag_values_data(
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
     ) -> Result<Vec<crate::graphql::types::TagValueResult>> {
-        debug!("📊 Fetching TagValues data");
+        debug!("📊 Fetching TagValues data - query_info: {:?}", query_info);
 
         // Get tag names from the WHERE clause
         let tag_names = query_info.get_tag_names();
@@ -39,6 +39,7 @@ impl QueryHandler {
 
         // Call GraphQL
         let graphql_start = Instant::now();
+        debug!("🌐 About to call get_tag_values with {} tag names: {:?}", final_tag_names.len(), final_tag_names);
         let tag_results = session
             .client
             .get_tag_values(&session.token, final_tag_names, false)

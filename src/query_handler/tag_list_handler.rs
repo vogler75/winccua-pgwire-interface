@@ -5,7 +5,7 @@ use anyhow::Result;
 use tracing::{debug};
 
 impl QueryHandler {
-    pub(super) async fn fetch_tag_list_data(
+    pub async fn fetch_tag_list_data(
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
     ) -> Result<Vec<crate::graphql::types::BrowseResult>> {

@@ -6,7 +6,7 @@ use std::time::Instant;
 use tracing::debug;
 
 impl QueryHandler {
-    pub(super) async fn fetch_active_alarms_data(
+    pub async fn fetch_active_alarms_data(
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
     ) -> Result<Vec<crate::graphql::types::ActiveAlarm>> {

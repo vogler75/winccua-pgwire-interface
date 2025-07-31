@@ -331,6 +331,29 @@ def create_catalog_tables(conn: sqlite3.Connection):
         )
     """)
     
+    # Create pg_settings table for configuration parameters
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_settings" (
+            name TEXT PRIMARY KEY,
+            setting TEXT,
+            unit TEXT,
+            category TEXT,
+            short_desc TEXT,
+            extra_desc TEXT,
+            context TEXT,
+            vartype TEXT,
+            source TEXT,
+            min_val TEXT,
+            max_val TEXT,
+            enumvals TEXT[],
+            boot_val TEXT,
+            reset_val TEXT,
+            sourcefile TEXT,
+            sourceline INTEGER,
+            pending_restart BOOLEAN
+        )
+    """)
+    
     conn.commit()
 
 def populate_catalog_tables(conn: sqlite3.Connection):
@@ -445,6 +468,20 @@ def populate_catalog_tables(conn: sqlite3.Connection):
             (16521, 16501, 2.0, 'bad'),
             (16522, 16501, 3.0, 'uncertain'),
             (16523, 16501, 4.0, 'not_connected')
+    """)
+    
+    # Insert some basic pg_settings entries for JDBC compatibility
+    cursor.execute("""
+        INSERT INTO "pg_catalog.pg_settings" (name, setting, unit, category, short_desc, vartype, context, source, boot_val, reset_val)
+        VALUES 
+            ('server_version', '14.0', NULL, 'Preset Options', 'Shows the server version.', 'string', 'internal', 'default', '14.0', '14.0'),
+            ('server_encoding', 'UTF8', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the server (database) character set encoding.', 'string', 'internal', 'default', 'UTF8', 'UTF8'),
+            ('client_encoding', 'UTF8', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the client''s character set encoding.', 'string', 'user', 'default', 'UTF8', 'UTF8'),
+            ('DateStyle', 'ISO, MDY', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the display format for date and time values.', 'string', 'user', 'default', 'ISO, MDY', 'ISO, MDY'),
+            ('TimeZone', 'UTC', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the time zone for displaying and interpreting time stamps.', 'string', 'user', 'default', 'UTC', 'UTC'),
+            ('search_path', 'public', NULL, 'Client Connection Defaults / Statement Behavior', 'Sets the schema search order for names that are not schema-qualified.', 'string', 'user', 'default', 'public', 'public'),
+            ('standard_conforming_strings', 'on', NULL, 'Version and Platform Compatibility / Previous PostgreSQL Versions', 'Causes ''...'' strings to treat backslashes literally.', 'bool', 'user', 'default', 'on', 'on'),
+            ('integer_datetimes', 'on', NULL, 'Preset Options', 'Datetimes are integer based.', 'bool', 'internal', 'default', 'on', 'on')
     """)
     
     conn.commit()

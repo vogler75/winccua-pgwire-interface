@@ -7,7 +7,7 @@ use std::time::Instant;
 use tracing::{debug, info, warn};
 
 impl QueryHandler {
-    pub(super) async fn fetch_logged_tag_values_data(
+    pub async fn fetch_logged_tag_values_data(
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
     ) -> Result<Vec<crate::graphql::types::LoggedTagValue>> {

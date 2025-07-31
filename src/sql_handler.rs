@@ -33,10 +33,6 @@ impl SqlHandler {
         let statement = &ast[0];
         match statement {
             Statement::Query(query) => {
-                // Check if this is a complex query that should be handled by DataFusion
-                if Self::is_complex_query(query) {
-                    return Err(anyhow!("Complex query detected - should be routed to DataFusion"));
-                }
                 let query_info = Self::parse_select_query(query)?;
                 Ok(SqlResult::Query(query_info))
             }
@@ -141,7 +137,12 @@ impl SqlHandler {
                     order_by,
                 };
 
-                Self::validate_query(&query_info)?;
+                // For complex queries with aggregations or complex expressions,
+                // bypass the strict validation requirements since DataFusion can handle them
+                let is_complex = Self::is_complex_query(query);
+                if !is_complex {
+                    Self::validate_query(&query_info)?;
+                }
                 Ok(query_info)
             }
             _ => Err(anyhow!("Only simple SELECT statements are supported")),
@@ -339,14 +340,14 @@ impl SqlHandler {
                             let filter = Self::create_filter(&column.value, &reversed_op, value_expr, table)?;
                             filters.push(filter);
                         } else {
-                            return Err(anyhow!("Complex WHERE expressions are not supported"));
+                            return Err(anyhow!("Complex query detected - should be routed to DataFusion"));
                         }
                     }
                 }
             }
             Expr::InList { expr, list, negated } => {
                 if *negated {
-                    return Err(anyhow!("NOT IN is not supported"));
+                    return Err(anyhow!("Complex query detected - should be routed to DataFusion"));
                 }
                 if let Expr::Identifier(column) = expr.as_ref() {
                     let values = list
@@ -361,12 +362,12 @@ impl SqlHandler {
                     };
                     filters.push(filter);
                 } else {
-                    return Err(anyhow!("Complex IN expressions are not supported"));
+                    return Err(anyhow!("Complex query detected - should be routed to DataFusion"));
                 }
             }
             Expr::Like { expr, pattern, negated, .. } => {
                 if *negated {
-                    return Err(anyhow!("NOT LIKE is not supported"));
+                    return Err(anyhow!("Complex query detected - should be routed to DataFusion"));
                 }
                 if let Expr::Identifier(column) = expr.as_ref() {
                     let pattern_str = Self::extract_string_value(pattern)?;
@@ -377,12 +378,12 @@ impl SqlHandler {
                     };
                     filters.push(filter);
                 } else {
-                    return Err(anyhow!("Complex LIKE expressions are not supported"));
+                    return Err(anyhow!("Complex query detected - should be routed to DataFusion"));
                 }
             }
             Expr::Between { expr, negated, low, high } => {
                 if *negated {
-                    return Err(anyhow!("NOT BETWEEN is not supported"));
+                    return Err(anyhow!("Complex query detected - should be routed to DataFusion"));
                 }
                 if let Expr::Identifier(column) = expr.as_ref() {
                     let low_val = Self::extract_filter_value(low)?;
@@ -394,10 +395,10 @@ impl SqlHandler {
                     };
                     filters.push(filter);
                 } else {
-                    return Err(anyhow!("Complex BETWEEN expressions are not supported"));
+                    return Err(anyhow!("Complex query detected - should be routed to DataFusion"));
                 }
             }
-            _ => return Err(anyhow!("Unsupported WHERE expression")),
+            _ => return Err(anyhow!("Complex query detected - should be routed to DataFusion")),
         }
 
         Ok(())

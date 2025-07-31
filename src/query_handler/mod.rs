@@ -247,12 +247,13 @@ fn extract_value_from_array(array: &dyn arrow::array::Array, index: usize) -> Re
 pub struct QueryHandler;
 
 impl QueryHandler {
-    async fn execute_complex_query_with_datafusion(sql: &str) -> Result<QueryResult> {
+
+    async fn execute_complex_query_with_datafusion(sql: &str, session: &AuthenticatedSession) -> Result<QueryResult> {
         debug!("📊 Executing complex query with DataFusion: {}", sql);
         
-        // Use DataFusion with catalog tables
+        // Use DataFusion with catalog tables and virtual tables
         let datafusion_start = std::time::Instant::now();
-        let (results, _timing) = datafusion_handler::execute_query_with_catalog(sql).await?;
+        let (results, _timing) = datafusion_handler::execute_query_with_virtual_tables(sql, session).await?;
         let datafusion_time_ms = datafusion_start.elapsed().as_millis() as u64;
         
         // Convert RecordBatch results to QueryResult
@@ -297,17 +298,7 @@ impl QueryHandler {
     pub async fn execute_query_with_connection(sql: &str, session: &AuthenticatedSession, session_manager: Arc<SessionManager>, connection_id: Option<u32>) -> Result<QueryResult> {
         let query_start = std::time::Instant::now();
         // Parse the SQL query
-        let sql_result = match SqlHandler::parse_query(sql) {
-            Ok(result) => result,
-            Err(e) => {
-                // Check if this is a complex query that should be routed to DataFusion
-                if e.to_string().contains("Complex query detected - should be routed to DataFusion") {
-                    debug!("📊 Routing complex query to DataFusion: {}", sql);
-                    return Self::execute_complex_query_with_datafusion(sql).await;
-                }
-                return Err(e);
-            }
-        };
+        let sql_result = SqlHandler::parse_query(sql)?;
         debug!("📋 Parsed SQL result: {:?}", sql_result);
 
         // Handle based on result type
@@ -316,9 +307,11 @@ impl QueryHandler {
                 // Execute based on table type
                 match query_info.table {
                     VirtualTable::TagValues => {
+                        debug!("🔀 TAGVALUES UNIFIED PATH: Routing TagValues query to GraphQL+DataFusion execution: {}", sql.trim());
                         Self::execute_datafusion_query(sql, &query_info, session).await
                     }
                     VirtualTable::LoggedTagValues => {
+                        debug!("🔀 Routing LoggedTagValues query to GraphQL+DataFusion execution: {}", sql.trim());
                         Self::execute_loggedtagvalues_datafusion_query(sql, &query_info, session)
                             .await
                     }

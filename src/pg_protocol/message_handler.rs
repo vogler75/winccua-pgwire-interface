@@ -251,9 +251,27 @@ async fn handle_parse_message(
             Ok(create_parse_complete_response())
         }
         Err(e) => {
-            // Query is invalid or unsupported
-            warn!("❌ Parse failed for statement with name '{}': {}: query: {}", statement_name, e, query.trim());
-            Err(anyhow!("{}", format!("Unsupported or invalid SQL statement: {}: Query: {}", e, query.trim())))
+            // Check if this is a complex query that should be routed to DataFusion
+            if e.to_string().contains("Complex query detected - should be routed to DataFusion") {
+                debug!("📋 Parse: accepting complex query for DataFusion routing: {}", query.trim());
+                
+                // Store the prepared statement even though it's complex - will be routed to DataFusion during execution
+                let prepared_stmt = PreparedStatement {
+                    name: statement_name.clone(),
+                    query: query.clone(),
+                    parameter_types,
+                };
+                connection_state
+                    .prepared_statements
+                    .insert(statement_name, prepared_stmt);
+
+                // Send ParseComplete response
+                Ok(create_parse_complete_response())
+            } else {
+                // Query is invalid or unsupported
+                warn!("❌ Parse failed for statement with name '{}': {}: query: {}", statement_name, e, query.trim());
+                Err(anyhow!("{}", format!("Unsupported or invalid SQL statement: {}: Query: {}", e, query.trim())))
+            }
         }
     }
 }
@@ -385,7 +403,11 @@ async fn handle_execute_message(
         return Ok(response);
     }
 
-    debug!("🔍 Executing parameterized query: {}", final_query.trim());
+    if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
+        info!("📥 SQL Query: {}", final_query.trim().replace('\n', " ").replace('\r', ""));
+    } else {
+        debug!("🔍 Executing parameterized query: {}", final_query.trim());
+    }
 
     // Start query tracking with timing
     let query_start = std::time::Instant::now();
@@ -462,9 +484,24 @@ async fn handle_describe_message(
                     && !super::query_execution::is_transaction_control_statement(&trimmed_query)
                     && !super::query_execution::is_utility_statement(&trimmed_query)
                 {
-                    // Execute the query to get proper column types (like Execute message does)
-                    tracing::debug!("🚀 Describe message: Executing query to get proper column types");
-                    match crate::query_handler::QueryHandler::execute_query_with_connection(&statement.query, session, session_manager.clone(), connection_id).await {
+                    // Check if query has parameters - if so, don't execute it in describe
+                    if statement.query.contains('$') {
+                        tracing::debug!("🚀 Describe message: Query has parameters, falling back to schema-based types");
+                        // Fallback to parsing only for parameterized queries
+                        match SqlHandler::parse_query(&statement.query) {
+                            Ok(SqlResult::Query(query_info)) => {
+                                response.extend_from_slice(&create_row_description_response(&query_info));
+                            }
+                            _ => {
+                                // For complex queries or non-SELECT statements, return minimal description
+                                response.push(b'n'); // NoData message
+                                response.extend_from_slice(&4u32.to_be_bytes()); // Length: 4
+                            }
+                        }
+                    } else {
+                        // Execute the query to get proper column types (like Execute message does)
+                        tracing::debug!("🚀 Describe message: Executing query to get proper column types");
+                        match crate::query_handler::QueryHandler::execute_query_with_connection(&statement.query, session, session_manager.clone(), connection_id).await {
                         Ok(query_result) => {
                             tracing::debug!("🚀 Describe message: Generated QueryResult with {} columns and proper OIDs", query_result.columns.len());
                             response.extend_from_slice(&create_row_description_response_with_types(&query_result));
@@ -482,6 +519,7 @@ async fn handle_describe_message(
                                     response.extend_from_slice(&4u32.to_be_bytes()); // Length: 4
                                 }
                             }
+                        }
                         }
                     }
                 } else {
@@ -508,9 +546,23 @@ async fn handle_describe_message(
                         return Ok(create_empty_row_description_response());
                     }
                     
-                    // For SELECT queries, execute the query to get proper column types
-                    tracing::debug!("🚀 Portal Describe: Executing query to get proper column types");
-                    match crate::query_handler::QueryHandler::execute_query_with_connection(&statement.query, session, session_manager.clone(), connection_id).await {
+                    // Check if query has parameters - if so, don't execute it in describe
+                    if statement.query.contains('$') {
+                        tracing::debug!("🚀 Portal Describe: Query has parameters, falling back to schema-based types");
+                        // Fallback to parsing only for parameterized queries
+                        match SqlHandler::parse_query(&statement.query) {
+                            Ok(SqlResult::Query(query_info)) => {
+                                Ok(create_row_description_response(&query_info))
+                            }
+                            _ => {
+                                // For complex queries or non-SELECT statements, return minimal description
+                                Ok(create_empty_row_description_response())
+                            }
+                        }
+                    } else {
+                        // For SELECT queries, execute the query to get proper column types
+                        tracing::debug!("🚀 Portal Describe: Executing query to get proper column types");
+                        match crate::query_handler::QueryHandler::execute_query_with_connection(&statement.query, session, session_manager.clone(), connection_id).await {
                         Ok(query_result) => {
                             tracing::debug!("🚀 Portal Describe: Generated QueryResult with {} columns and proper OIDs", query_result.columns.len());
                             Ok(create_row_description_response_with_types(&query_result))
@@ -530,6 +582,7 @@ async fn handle_describe_message(
                                     Ok(create_empty_row_description_response())
                                 }
                             }
+                        }
                         }
                     }
                 } else {
