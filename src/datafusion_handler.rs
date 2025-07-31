@@ -17,7 +17,7 @@ struct PgGetUserByIdUDF {
 impl PgGetUserByIdUDF {
     fn new() -> Self {
         Self {
-            signature: Signature::exact(vec![DataType::Int32], Volatility::Stable),
+            signature: Signature::any(1, Volatility::Stable),
         }
     }
 }
@@ -40,7 +40,7 @@ impl ScalarUDFImpl for PgGetUserByIdUDF {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
-        use arrow::array::{Array, Int32Array, StringArray};
+        use arrow::array::{Array, Int32Array, Int64Array, StringArray};
         use arrow::compute::kernels::cast;
         
         let args = args.args;
@@ -51,18 +51,49 @@ impl ScalarUDFImpl for PgGetUserByIdUDF {
         let user_oids = args[0].clone().into_array(1)?;
         let mut results = Vec::new();
         
-        // Convert input to i32 if needed
-        let oid_array = if user_oids.data_type() == &DataType::Int32 {
-            user_oids.as_any().downcast_ref::<Int32Array>().unwrap()
-        } else {
-            // Try to cast to Int32
-            let casted = cast::cast(user_oids.as_ref(), &DataType::Int32)?;
-            let casted_i32 = casted.as_any().downcast_ref::<Int32Array>().unwrap();
-            return Ok(ColumnarValue::Array({
-                let mut cast_results = Vec::new();
+        // Handle both Int32 and Int64 inputs
+        match user_oids.data_type() {
+            DataType::Int32 => {
+                let oid_array = user_oids.as_any().downcast_ref::<Int32Array>().unwrap();
+                for i in 0..oid_array.len() {
+                    if oid_array.is_null(i) {
+                        results.push(None);
+                    } else {
+                        let oid = oid_array.value(i);
+                        let username = match oid {
+                            10 => "postgres",
+                            0 => "unknown",
+                            1 => "template1",
+                            _ => "user",
+                        };
+                        results.push(Some(username.to_string()));
+                    }
+                }
+            }
+            DataType::Int64 => {
+                let oid_array = user_oids.as_any().downcast_ref::<Int64Array>().unwrap();
+                for i in 0..oid_array.len() {
+                    if oid_array.is_null(i) {
+                        results.push(None);
+                    } else {
+                        let oid = oid_array.value(i) as i32;
+                        let username = match oid {
+                            10 => "postgres",
+                            0 => "unknown", 
+                            1 => "template1",
+                            _ => "user",
+                        };
+                        results.push(Some(username.to_string()));
+                    }
+                }
+            }
+            _ => {
+                // Try to cast to Int32
+                let casted = cast::cast(user_oids.as_ref(), &DataType::Int32)?;
+                let casted_i32 = casted.as_any().downcast_ref::<Int32Array>().unwrap();
                 for i in 0..casted_i32.len() {
                     if casted_i32.is_null(i) {
-                        cast_results.push(None);
+                        results.push(None);
                     } else {
                         let oid = casted_i32.value(i);
                         let username = match oid {
@@ -71,26 +102,9 @@ impl ScalarUDFImpl for PgGetUserByIdUDF {
                             1 => "template1",
                             _ => "user",
                         };
-                        cast_results.push(Some(username.to_string()));
+                        results.push(Some(username.to_string()));
                     }
                 }
-                Arc::new(StringArray::from(cast_results))
-            }));
-        };
-        
-        for i in 0..oid_array.len() {
-            if oid_array.is_null(i) {
-                results.push(None);
-            } else {
-                let oid = oid_array.value(i);
-                // Map common PostgreSQL user OIDs to names
-                let username = match oid {
-                    10 => "postgres",     // Default superuser
-                    0 => "unknown",       // Invalid OID
-                    1 => "template1",     // Template database owner
-                    _ => "user",          // Generic user for other OIDs
-                };
-                results.push(Some(username.to_string()));
             }
         }
         
@@ -108,7 +122,7 @@ struct PgGetFunctionIdentityArgumentsUDF {
 impl PgGetFunctionIdentityArgumentsUDF {
     fn new() -> Self {
         Self {
-            signature: Signature::exact(vec![DataType::Int32], Volatility::Stable),
+            signature: Signature::any(1, Volatility::Stable),
         }
     }
 }
@@ -131,7 +145,7 @@ impl ScalarUDFImpl for PgGetFunctionIdentityArgumentsUDF {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
-        use arrow::array::{Array, Int32Array, StringArray};
+        use arrow::array::{Array, Int32Array, Int64Array, StringArray};
         use arrow::compute::kernels::cast;
         
         let args = args.args;
@@ -142,34 +156,42 @@ impl ScalarUDFImpl for PgGetFunctionIdentityArgumentsUDF {
         let function_oids = args[0].clone().into_array(1)?;
         let mut results = Vec::new();
         
-        // Convert input to i32 if needed
-        let oid_array = if function_oids.data_type() == &DataType::Int32 {
-            function_oids.as_any().downcast_ref::<Int32Array>().unwrap()
-        } else {
-            // Try to cast to Int32
-            let casted = cast::cast(function_oids.as_ref(), &DataType::Int32)?;
-            let casted_i32 = casted.as_any().downcast_ref::<Int32Array>().unwrap();
-            return Ok(ColumnarValue::Array({
-                let mut cast_results = Vec::new();
-                for i in 0..casted_i32.len() {
-                    if casted_i32.is_null(i) {
-                        cast_results.push(None);
+        // Handle both Int32 and Int64 inputs
+        match function_oids.data_type() {
+            DataType::Int32 => {
+                let oid_array = function_oids.as_any().downcast_ref::<Int32Array>().unwrap();
+                for i in 0..oid_array.len() {
+                    if oid_array.is_null(i) {
+                        results.push(None);
                     } else {
                         // For now, return empty string for all function OIDs
-                        cast_results.push(Some("".to_string()));
+                        results.push(Some("".to_string()));
                     }
                 }
-                Arc::new(StringArray::from(cast_results))
-            }));
-        };
-        
-        for i in 0..oid_array.len() {
-            if oid_array.is_null(i) {
-                results.push(None);
-            } else {
-                // For now, return empty string for all function OIDs
-                // In a real implementation, this would look up the actual function signature
-                results.push(Some("".to_string()));
+            }
+            DataType::Int64 => {
+                let oid_array = function_oids.as_any().downcast_ref::<Int64Array>().unwrap();
+                for i in 0..oid_array.len() {
+                    if oid_array.is_null(i) {
+                        results.push(None);
+                    } else {
+                        // For now, return empty string for all function OIDs
+                        results.push(Some("".to_string()));
+                    }
+                }
+            }
+            _ => {
+                // Try to cast to Int32
+                let casted = cast::cast(function_oids.as_ref(), &DataType::Int32)?;
+                let casted_i32 = casted.as_any().downcast_ref::<Int32Array>().unwrap();
+                for i in 0..casted_i32.len() {
+                    if casted_i32.is_null(i) {
+                        results.push(None);
+                    } else {
+                        // For now, return empty string for all function OIDs
+                        results.push(Some("".to_string()));
+                    }
+                }
             }
         }
         
@@ -185,16 +207,22 @@ fn register_postgresql_functions(ctx: &SessionContext) -> Result<()> {
     Ok(())
 }
 
-/// Replace schema-qualified table names with underscore versions to avoid DataFusion schema parsing
+/// Replace schema-qualified table names with underscore versions and handle PostgreSQL type casts
 fn normalize_schema_qualified_tables(sql: &str) -> String {
-    // Use regex to find pg_catalog.table_name patterns and replace dots with underscores
     use regex::Regex;
+    
+    // First, handle PostgreSQL type casts like 'value'::pg_catalog.regtype
+    // Pattern to match ::pg_catalog.type_name and remove the cast
+    let cast_re = Regex::new(r"::pg_catalog\.([a-zA-Z_][a-zA-Z0-9_]*)\b").unwrap();
+    let mut processed_sql = cast_re.replace_all(sql, "").to_string();
     
     // Pattern to match pg_catalog.table_name (case insensitive)
     let re = Regex::new(r"(?i)\bpg_catalog\.([a-zA-Z_][a-zA-Z0-9_]*)\b").unwrap();
     
     // Replace pg_catalog.table_name with pg_catalog_table_name
-    re.replace_all(sql, "pg_catalog_$1").to_string()
+    processed_sql = re.replace_all(&processed_sql, "pg_catalog_$1").to_string();
+    
+    processed_sql
 }
 
 pub async fn execute_query(
