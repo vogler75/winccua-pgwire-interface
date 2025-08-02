@@ -128,6 +128,9 @@ impl SqlHandler {
                 // OrderBy structure changed in newer sqlparser - skip for now
                 let order_by = None;
                 
+                // For catalog tables, always bypass validation since they're handled by DataFusion
+                let is_catalog_table = matches!(table, VirtualTable::CatalogTable(_));
+                
                 let query_info = QueryInfo {
                     table,
                     columns,
@@ -140,7 +143,8 @@ impl SqlHandler {
                 // For complex queries with aggregations or complex expressions,
                 // bypass the strict validation requirements since DataFusion can handle them
                 let is_complex = Self::is_complex_query(query);
-                if !is_complex {
+                
+                if !is_complex && !is_catalog_table {
                     Self::validate_query(&query_info)?;
                 }
                 Ok(query_info)
@@ -305,6 +309,11 @@ impl SqlHandler {
 
     fn extract_filters(select: &Select, table: &VirtualTable) -> Result<Vec<ColumnFilter>> {
         let mut filters = Vec::new();
+
+        // For catalog tables, skip filter extraction since DataFusion will handle it
+        if matches!(table, VirtualTable::CatalogTable(_)) {
+            return Ok(filters);
+        }
 
         if let Some(where_clause) = &select.selection {
             Self::extract_filters_from_expr(where_clause, table, &mut filters)?;
