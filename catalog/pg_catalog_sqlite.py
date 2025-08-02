@@ -304,20 +304,15 @@ def create_catalog_tables(conn: sqlite3.Connection):
             datname TEXT NOT NULL,
             datdba INTEGER NOT NULL,
             encoding INTEGER NOT NULL,
-            datlocprovider TEXT NOT NULL,
-            datistemplate BOOLEAN NOT NULL,
-            datallowconn BOOLEAN NOT NULL,
-            dathasloginevt BOOLEAN NOT NULL,
-            datconnlimit INTEGER NOT NULL,
-            datfrozenxid INTEGER NOT NULL,
-            datminmxid INTEGER NOT NULL,
-            dattablespace INTEGER NOT NULL,
             datcollate TEXT NOT NULL,
             datctype TEXT NOT NULL,
-            datlocale TEXT,
-            daticurules TEXT,
-            datcollversion TEXT,
-            datacl TEXT
+            datistemplate BOOLEAN NOT NULL,
+            datallowconn BOOLEAN NOT NULL,
+            datconnlimit INTEGER NOT NULL,
+            datlastsysoid INTEGER NOT NULL,
+            datfrozenxid INTEGER NOT NULL,
+            datminmxid INTEGER NOT NULL,
+            dattablespace INTEGER NOT NULL
         )
     """)
     
@@ -367,7 +362,7 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     """)
     
     # Insert wincc database (referenced by pg_stat_activity)
-    database_oid = 16384
+    database_oid = 13769
     
     # Insert data types
     for type_name, (oid, name, size, align) in PG_TYPE_MAPPINGS.items():
@@ -411,43 +406,15 @@ def populate_catalog_tables(conn: sqlite3.Connection):
         
         table_oid += 1
     
-    # Insert some sample procedures
-    cursor.execute("""
-        INSERT INTO "pg_catalog.pg_proc" (oid, proname, pronamespace, prorettype, pronargs, 
-                           proargtypes, prosrc, provolatile)
-        VALUES 
-            (30000, 'get_current_tags', 2200, 25, 0, '', 
-             'SELECT * FROM tagvalues', 'v'),
-            (30001, 'get_active_alarms', 2200, 25, 0, '', 
-             'SELECT * FROM activealarms WHERE state = ''active''', 'v')
-    """)
-    
     # Insert database information
     cursor.execute("""
         INSERT INTO "pg_catalog.pg_database" (
-            oid, datname, datdba, encoding, datlocprovider, datistemplate, 
-            datallowconn, dathasloginevt, datconnlimit, datfrozenxid, datminmxid, 
-            dattablespace, datcollate, datctype, datlocale, daticurules, 
-            datcollversion, datacl
+            oid, datname, datdba, encoding, datcollate, datctype, datistemplate, 
+            datallowconn, datconnlimit, datlastsysoid, datfrozenxid, datminmxid, 
+            dattablespace 
         ) VALUES 
-            (16384, 'postgres', 10, 6, 'c', false, true, false, -1, 479, 1, 
-             1663, 'en_US.UTF-8', 'en_US.UTF-8', NULL, NULL, NULL, NULL),
-            (1, 'template1', 10, 6, 'c', true, true, false, -1, 479, 1, 
-             1663, 'en_US.UTF-8', 'en_US.UTF-8', NULL, NULL, NULL, NULL),
-            (16385, 'template0', 10, 6, 'c', true, false, false, -1, 479, 1, 
-             1663, 'en_US.UTF-8', 'en_US.UTF-8', NULL, NULL, NULL, NULL),
-            (16386, 'wincc', 10, 6, 'c', false, true, false, -1, 479, 1, 
-             1663, 'en_US.UTF-8', 'en_US.UTF-8', NULL, NULL, NULL, NULL)
-    """)
-    
-    # Insert enum types and values for WinCC-specific enums
-    # First, we need to add enum types to pg_type table
-    cursor.execute("""
-        INSERT INTO "pg_catalog.pg_type" (oid, typname, typnamespace, typlen, typbyval, 
-                           typtype, typcategory, typalign, typstorage)
-        VALUES 
-            (16500, 'alarm_state_enum', 2200, 4, true, 'e', 'E', 'i', 'p'),
-            (16501, 'tag_quality_enum', 2200, 4, true, 'e', 'E', 'i', 'p')
+            (13769, 'postgres', 10, 6, 'en_US.UTF-8', 'en_US.UTF-8', false, 
+             true, -1, 0, 0, 0, 0)
     """)
     
     # Insert enum values for alarm_state_enum
@@ -478,10 +445,7 @@ def populate_catalog_tables(conn: sqlite3.Connection):
             ('server_encoding', 'UTF8', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the server (database) character set encoding.', 'string', 'internal', 'default', 'UTF8', 'UTF8'),
             ('client_encoding', 'UTF8', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the client''s character set encoding.', 'string', 'user', 'default', 'UTF8', 'UTF8'),
             ('DateStyle', 'ISO, MDY', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the display format for date and time values.', 'string', 'user', 'default', 'ISO, MDY', 'ISO, MDY'),
-            ('TimeZone', 'UTC', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the time zone for displaying and interpreting time stamps.', 'string', 'user', 'default', 'UTC', 'UTC'),
-            ('search_path', 'public', NULL, 'Client Connection Defaults / Statement Behavior', 'Sets the schema search order for names that are not schema-qualified.', 'string', 'user', 'default', 'public', 'public'),
-            ('standard_conforming_strings', 'on', NULL, 'Version and Platform Compatibility / Previous PostgreSQL Versions', 'Causes ''...'' strings to treat backslashes literally.', 'bool', 'user', 'default', 'on', 'on'),
-            ('integer_datetimes', 'on', NULL, 'Preset Options', 'Datetimes are integer based.', 'bool', 'internal', 'default', 'on', 'on')
+            ('TimeZone', 'UTC', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the time zone for displaying and interpreting time stamps.', 'string', 'user', 'default', 'UTC', 'UTC')
     """)
     
     conn.commit()

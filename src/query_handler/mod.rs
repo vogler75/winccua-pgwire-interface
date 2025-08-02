@@ -628,8 +628,14 @@ impl QueryHandler {
         // Use DataFusion to execute the FROM-less query directly
         let ctx = datafusion::prelude::SessionContext::new();
         
+        // Register PostgreSQL functions
+        datafusion_handler::register_postgresql_functions(&ctx)?;
+        
+        // Normalize SQL to handle session_user without parentheses, using actual logged-in username
+        let normalized_sql = datafusion_handler::normalize_schema_qualified_tables_with_username(sql, &session.username);
+        
         // Execute the query
-        let df = ctx.sql(sql).await?;
+        let df = ctx.sql(&normalized_sql).await?;
         let batches = df.collect().await?;
         
         // Convert the results to QueryResult

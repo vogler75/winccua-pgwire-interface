@@ -240,13 +240,13 @@ impl ScalarUDFImpl for CurrentSchemaUDF {
     }
 }
 
-/// Implementation of session_user function
+/// Implementation of version() function
 #[derive(Debug)]
-struct SessionUserUDF {
+struct VersionUDF {
     signature: Signature,
 }
 
-impl SessionUserUDF {
+impl VersionUDF {
     fn new() -> Self {
         Self {
             signature: Signature::exact(vec![], Volatility::Stable),
@@ -254,13 +254,13 @@ impl SessionUserUDF {
     }
 }
 
-impl ScalarUDFImpl for SessionUserUDF {
+impl ScalarUDFImpl for VersionUDF {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
     fn name(&self) -> &str {
-        "session_user"
+        "version"
     }
 
     fn signature(&self) -> &Signature {
@@ -274,7 +274,48 @@ impl ScalarUDFImpl for SessionUserUDF {
     fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
         use arrow::array::StringArray;
         
-        // Return "postgres" as the default user
+        // Return a PostgreSQL-compatible version string
+        let version = "PostgreSQL 15.0 (WinCC UA PostgreSQL Wire Protocol Server v1.0) on x86_64-pc-linux-gnu, compiled by DataFusion, 64-bit";
+        let result = StringArray::from(vec![version]);
+        Ok(ColumnarValue::Array(Arc::new(result)))
+    }
+}
+
+/// Implementation of current_database() function
+#[derive(Debug)]
+struct CurrentDatabaseUDF {
+    signature: Signature,
+}
+
+impl CurrentDatabaseUDF {
+    fn new() -> Self {
+        Self {
+            signature: Signature::exact(vec![], Volatility::Stable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for CurrentDatabaseUDF {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "current_database"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
+        use arrow::array::StringArray;
+        
+        // Return the default database name
         let result = StringArray::from(vec!["postgres"]);
         Ok(ColumnarValue::Array(Arc::new(result)))
     }
@@ -475,18 +516,23 @@ impl ScalarUDFImpl for NullIfUDF {
 }
 
 /// Register PostgreSQL system functions with DataFusion context
-fn register_postgresql_functions(ctx: &SessionContext) -> Result<()> {
+pub fn register_postgresql_functions(ctx: &SessionContext) -> Result<()> {
     ctx.register_udf(ScalarUDF::new_from_impl(PgGetUserByIdUDF::new()));
     ctx.register_udf(ScalarUDF::new_from_impl(PgGetFunctionIdentityArgumentsUDF::new()));
     ctx.register_udf(ScalarUDF::new_from_impl(CurrentSchemaUDF::new()));
-    ctx.register_udf(ScalarUDF::new_from_impl(SessionUserUDF::new()));
+    ctx.register_udf(ScalarUDF::new_from_impl(VersionUDF::new()));
+    ctx.register_udf(ScalarUDF::new_from_impl(CurrentDatabaseUDF::new()));
     ctx.register_udf(ScalarUDF::new_from_impl(FormatTypeUDF::new()));
     ctx.register_udf(ScalarUDF::new_from_impl(NullIfUDF::new()));
     Ok(())
 }
 
 /// Replace schema-qualified table names with underscore versions and handle PostgreSQL type casts
-fn normalize_schema_qualified_tables(sql: &str) -> String {
+pub fn normalize_schema_qualified_tables(sql: &str) -> String {
+    normalize_schema_qualified_tables_with_username(sql, "postgres")
+}
+
+pub fn normalize_schema_qualified_tables_with_username(sql: &str, username: &str) -> String {
     use regex::Regex;
     
     // First, handle PostgreSQL type casts like 'value'::pg_catalog.regtype and 'value'::regclass
@@ -497,6 +543,21 @@ fn normalize_schema_qualified_tables(sql: &str) -> String {
     // Also handle standalone PostgreSQL type casts like ::regclass, ::regtype, etc.
     let standalone_cast_re = Regex::new(r"::(regclass|regtype|regproc|regprocedure|regoper|regoperator|regconfig|regdictionary)\b").unwrap();
     processed_sql = standalone_cast_re.replace_all(&processed_sql, "").to_string();
+    
+    // Handle PostgreSQL special identifiers (session_user, current_user, user)
+    // These are identifiers, not functions, so we need to replace them with literal values
+    
+    // Replace session_user with a string literal containing the actual username
+    let session_user_re = Regex::new(r"\bsession_user\b").unwrap();
+    processed_sql = session_user_re.replace_all(&processed_sql, &format!("'{}'", username)).to_string();
+    
+    // Replace current_user with a string literal containing the actual username
+    let current_user_re = Regex::new(r"\bcurrent_user\b").unwrap();
+    processed_sql = current_user_re.replace_all(&processed_sql, &format!("'{}'", username)).to_string();
+    
+    // Replace user with a string literal containing the actual username (user is equivalent to current_user)
+    let user_re = Regex::new(r"\buser\b").unwrap();
+    processed_sql = user_re.replace_all(&processed_sql, &format!("'{}'", username)).to_string();
     
     // Pattern to match pg_catalog.table_name (case insensitive)
     let re = Regex::new(r"(?i)\bpg_catalog\.([a-zA-Z_][a-zA-Z0-9_]*)\b").unwrap();
@@ -550,8 +611,8 @@ pub async fn execute_query(
 pub async fn execute_query_with_virtual_tables(sql: &str, session: &crate::auth::AuthenticatedSession) -> Result<(Vec<RecordBatch>, u64)> {
     let start_time = Instant::now();
     
-    // Pre-process SQL to normalize schema-qualified table names
-    let processed_sql = normalize_schema_qualified_tables(sql);
+    // Pre-process SQL to normalize schema-qualified table names, using actual logged-in username
+    let processed_sql = normalize_schema_qualified_tables_with_username(sql, &session.username);
     debug!("🔧 Processed SQL: {} -> {}", sql, processed_sql);
     
     let ctx = SessionContext::new();
