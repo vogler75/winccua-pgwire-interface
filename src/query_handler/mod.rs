@@ -337,10 +337,8 @@ impl QueryHandler {
                 Some(overall_time_ms),
             ).await;
             if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
-                info!("🕐 Query completed in {}ms for connection {} (GraphQL: {:?}ms, DataFusion: {:?}ms)", 
-                    overall_time_ms, conn_id, 
-                    final_result.timings.graphql_time_ms,
-                    final_result.timings.datafusion_time_ms);
+                let row_limit = crate::SQL_LOG_ROWS.load(std::sync::atomic::Ordering::Relaxed);
+                Self::log_sql_result(sql, &final_result, overall_time_ms, row_limit);
             } else {
                 debug!("🕐 Query completed in {}ms for connection {} (GraphQL: {:?}ms, DataFusion: {:?}ms)", 
                     overall_time_ms, conn_id, 
@@ -349,6 +347,11 @@ impl QueryHandler {
             }
         } else {
             debug!("🔍 No connection_id provided, timing data not saved to session manager");
+            // Still log SQL if enabled
+            if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
+                let row_limit = crate::SQL_LOG_ROWS.load(std::sync::atomic::Ordering::Relaxed);
+                Self::log_sql_result(sql, &final_result, overall_time_ms, row_limit);
+            }
         }
 
         Ok(final_result)
@@ -1048,5 +1051,166 @@ impl QueryHandler {
         } else {
             Ok(None)
         }
+    }
+
+    /// Log SQL query and results in a formatted table
+    fn log_sql_result(sql: &str, result: &QueryResult, execution_time_ms: u64, row_limit: usize) {
+        if row_limit == 0 {
+            // Only log SQL statement and row count
+            info!("🗃️  SQL Result: {} rows | Time: {}ms | Query: {}",                 
+                result.rows.len(), 
+                execution_time_ms, 
+                sql.trim().replace('\n', " ").replace('\r', ""));
+        } else {
+            // Log SQL statement with formatted table
+            let table_output = Self::format_query_result_as_table(result, row_limit);
+            info!("🗃️  SQL Result: {} rows | Time: {}ms | Query: {}\n{}",                 
+                result.rows.len(), 
+                execution_time_ms,
+                sql.trim().replace('\n', " ").replace('\r', ""),
+                table_output);
+        }
+    }
+
+    /// Format QueryResult as a nicely formatted table
+    fn format_query_result_as_table(result: &QueryResult, limit: usize) -> String {
+        if result.rows.is_empty() {
+            return "No rows returned".to_string();
+        }
+        
+        let _num_columns = result.columns.len();
+        let num_rows = result.rows.len().min(limit);
+        
+        // Calculate column widths
+        let mut column_widths: Vec<usize> = result.columns.iter().map(|name| name.len()).collect();
+        
+        // Check data widths for each column
+        for row in result.rows.iter().take(num_rows) {
+            for (col_idx, value) in row.iter().enumerate() {
+                if col_idx < column_widths.len() {
+                    let value_str = Self::format_query_value(value);
+                    column_widths[col_idx] = column_widths[col_idx].max(value_str.len());
+                }
+            }
+        }
+        
+        let mut output = String::new();
+        
+        // Header row
+        for (i, (name, &width)) in result.columns.iter().zip(column_widths.iter()).enumerate() {
+            if i > 0 {
+                output.push('|');
+            }
+            output.push_str(&format!("{:width$}", name, width = width));
+        }
+        output.push_str("|\n");
+        
+        // Separator row
+        for (i, &width) in column_widths.iter().enumerate() {
+            if i > 0 {
+                output.push('+');
+            }
+            output.push_str(&"-".repeat(width));
+        }
+        output.push_str("|\n");
+        
+        // Data rows
+        for row in result.rows.iter().take(num_rows) {
+            for (col_idx, &width) in column_widths.iter().enumerate() {
+                if col_idx > 0 {
+                    output.push('|');
+                }
+                let value_str = if col_idx < row.len() {
+                    Self::format_query_value(&row[col_idx])
+                } else {
+                    "".to_string()
+                };
+                output.push_str(&format!("{:width$}", value_str, width = width));
+            }
+            output.push_str("|\n");
+        }
+        
+        output
+    }
+
+    /// Format a QueryValue as a string for display
+    fn format_query_value(value: &QueryValue) -> String {
+        match value {
+            QueryValue::Null => "".to_string(),
+            QueryValue::Text(s) => s.clone(),
+            QueryValue::Integer(i) => i.to_string(),
+            QueryValue::Float(f) => f.to_string(),
+            QueryValue::Timestamp(t) => t.clone(),
+            QueryValue::Boolean(b) => b.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sql_result_table_formatting() {
+        // Create a mock QueryResult
+        let mut result = QueryResult::new(
+            vec!["attname".to_string(), "attnum".to_string(), "relname".to_string(), "nspname".to_string(), "indisprimary".to_string()],
+            vec![25, 23, 25, 25, 16] // TEXT, INT4, TEXT, TEXT, BOOL
+        );
+        
+        result.add_row(vec![
+            QueryValue::Text("id".to_string()),
+            QueryValue::Integer(1),
+            QueryValue::Text("eaten_food_pkey1".to_string()),
+            QueryValue::Text("public".to_string()),
+            QueryValue::Boolean(true),
+        ]);
+        
+        result.add_row(vec![
+            QueryValue::Text("name".to_string()),
+            QueryValue::Integer(2),
+            QueryValue::Text("eaten_food_pkey2".to_string()),
+            QueryValue::Text("public".to_string()),
+            QueryValue::Boolean(false),
+        ]);
+        
+        // Test table formatting
+        let formatted = QueryHandler::format_query_result_as_table(&result, 10);
+        println!("Formatted table:\n{}", formatted);
+        
+        // Verify basic structure
+        assert!(formatted.contains("attname"));
+        assert!(formatted.contains("attnum"));
+        assert!(formatted.contains("relname"));
+        assert!(formatted.contains("nspname"));
+        assert!(formatted.contains("indisprimary"));
+        assert!(formatted.contains("id"));
+        assert!(formatted.contains("eaten_food_pkey1"));
+        assert!(formatted.contains("true"));
+        assert!(formatted.contains("false"));
+        
+        // Test row limit of 0 (should return empty)
+        let empty_result = QueryResult::new(vec!["col1".to_string()], vec![25]);
+        let formatted_empty = QueryHandler::format_query_result_as_table(&empty_result, 10);
+        assert_eq!(formatted_empty, "No rows returned");
+        
+        // Test row limit
+        let limited = QueryHandler::format_query_result_as_table(&result, 1);
+        println!("Limited table (1 row):\n{}", limited);
+        // Should only contain first row data
+        assert!(limited.contains("id"));
+        assert!(limited.contains("eaten_food_pkey1"));
+        assert!(!limited.contains("eaten_food_pkey2")); // Second row should not be included
+    }
+
+    #[test]
+    fn test_format_query_value() {
+        assert_eq!(QueryHandler::format_query_value(&QueryValue::Null), "");
+        assert_eq!(QueryHandler::format_query_value(&QueryValue::Text("hello".to_string())), "hello");
+        assert_eq!(QueryHandler::format_query_value(&QueryValue::Integer(42)), "42");
+        assert_eq!(QueryHandler::format_query_value(&QueryValue::Float(3.14)), "3.14");
+        assert_eq!(QueryHandler::format_query_value(&QueryValue::Boolean(true)), "true");
+        assert_eq!(QueryHandler::format_query_value(&QueryValue::Boolean(false)), "false");
+        assert_eq!(QueryHandler::format_query_value(&QueryValue::Timestamp("2024-01-01".to_string())), "2024-01-01");
     }
 }

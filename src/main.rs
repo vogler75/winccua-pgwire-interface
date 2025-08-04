@@ -15,6 +15,143 @@ use tracing_subscriber::registry::LookupSpan;
 // Global flag for SQL logging
 pub static LOG_SQL: AtomicBool = AtomicBool::new(false);
 
+// Global SQL result row limit (0 = only count, >0 = show that many rows)
+pub static SQL_LOG_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Format query results as a nicely formatted table
+pub fn format_result_table(batch: &arrow::record_batch::RecordBatch, limit: usize) -> String {
+    if batch.num_rows() == 0 {
+        return "No rows returned".to_string();
+    }
+    
+    let schema = batch.schema();
+    let num_columns = schema.fields().len();
+    let num_rows = batch.num_rows().min(limit);
+    
+    // Get column names
+    let column_names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+    
+    // Calculate column widths
+    let mut column_widths: Vec<usize> = column_names.iter().map(|name| name.len()).collect();
+    
+    // Check data widths for each column
+    for col_idx in 0..num_columns {
+        let column = batch.column(col_idx);
+        for row_idx in 0..num_rows {
+            let value_str = format_arrow_value(column, row_idx);
+            column_widths[col_idx] = column_widths[col_idx].max(value_str.len());
+        }
+    }
+    
+    let mut result = String::new();
+    
+    // Header row
+    for (i, (name, &width)) in column_names.iter().zip(column_widths.iter()).enumerate() {
+        if i > 0 {
+            result.push('|');
+        }
+        result.push_str(&format!("{:width$}", name, width = width));
+    }
+    result.push_str("|\n");
+    
+    // Separator row
+    for (i, &width) in column_widths.iter().enumerate() {
+        if i > 0 {
+            result.push('+');
+        }
+        result.push_str(&"-".repeat(width));
+    }
+    result.push_str("|\n");
+    
+    // Data rows
+    for row_idx in 0..num_rows {
+        for (col_idx, &width) in column_widths.iter().enumerate() {
+            if col_idx > 0 {
+                result.push('|');
+            }
+            let column = batch.column(col_idx);
+            let value_str = format_arrow_value(column, row_idx);
+            result.push_str(&format!("{:width$}", value_str, width = width));
+        }
+        result.push_str("|\n");
+    }
+    
+    result
+}
+
+/// Format an Arrow array value at a specific index as a string
+fn format_arrow_value(column: &dyn arrow::array::Array, row_idx: usize) -> String {
+    use arrow::array::*;
+    use arrow::datatypes::DataType;
+    
+    if column.is_null(row_idx) {
+        return "".to_string(); // Empty for NULL values
+    }
+    
+    match column.data_type() {
+        DataType::Boolean => {
+            let array = column.as_any().downcast_ref::<BooleanArray>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::Int8 => {
+            let array = column.as_any().downcast_ref::<Int8Array>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::Int16 => {
+            let array = column.as_any().downcast_ref::<Int16Array>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::Int32 => {
+            let array = column.as_any().downcast_ref::<Int32Array>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::Int64 => {
+            let array = column.as_any().downcast_ref::<Int64Array>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::UInt8 => {
+            let array = column.as_any().downcast_ref::<UInt8Array>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::UInt16 => {
+            let array = column.as_any().downcast_ref::<UInt16Array>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::UInt32 => {
+            let array = column.as_any().downcast_ref::<UInt32Array>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::UInt64 => {
+            let array = column.as_any().downcast_ref::<UInt64Array>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::Float32 => {
+            let array = column.as_any().downcast_ref::<Float32Array>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::Float64 => {
+            let array = column.as_any().downcast_ref::<Float64Array>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::Utf8 => {
+            let array = column.as_any().downcast_ref::<StringArray>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::LargeUtf8 => {
+            let array = column.as_any().downcast_ref::<LargeStringArray>().unwrap();
+            array.value(row_idx).to_string()
+        }
+        DataType::Timestamp(_, _) => {
+            // Handle timestamps - for now just convert to string
+            format!("timestamp({})", row_idx)
+        }
+        _ => {
+            // For unsupported types, show a placeholder
+            format!("unsupported_type({})", row_idx)
+        }
+    }
+}
+
 // Global settings cache
 #[derive(Debug, Clone)]
 pub struct PostgreSQLSetting {
@@ -260,9 +397,12 @@ pub struct Args {
     #[arg(long, default_value_t = 30)]
     pub keep_alive_interval: u64,
 
-    /// Enable SQL query logging at INFO level (default: logs at DEBUG level)
+    /// Enable SQL query logging at INFO level with result table formatting
+    /// - Specify number of rows to display (e.g., --log-sql 100)
+    /// - Use 0 to only log SQL statement and row count
+    /// - Without this option, logs at DEBUG level only
     #[arg(long)]
-    pub log_sql: bool,
+    pub log_sql: Option<usize>,
 
     /// Suppress connection and authentication log messages
     #[arg(long)]
@@ -303,11 +443,18 @@ async fn main() -> Result<()> {
     info!("Session extension interval: {} seconds", args.session_extension_interval);
     info!("Keep-alive interval: {} seconds", args.keep_alive_interval);
     
-    // Set global SQL logging flag
-    LOG_SQL.store(args.log_sql, Ordering::Relaxed);
-    if args.log_sql {
-        info!("SQL query logging: ENABLED (INFO level)");
+    // Set global SQL logging flag and row limit
+    if let Some(row_limit) = args.log_sql {
+        LOG_SQL.store(true, Ordering::Relaxed);
+        SQL_LOG_ROWS.store(row_limit, Ordering::Relaxed);
+        if row_limit == 0 {
+            info!("SQL query logging: ENABLED (INFO level, statement + row count only)");
+        } else {
+            info!("SQL query logging: ENABLED (INFO level, showing first {} rows)", row_limit);
+        }
     } else {
+        LOG_SQL.store(false, Ordering::Relaxed);
+        SQL_LOG_ROWS.store(0, Ordering::Relaxed);
         info!("SQL query logging: DEBUG level only");
     }
 

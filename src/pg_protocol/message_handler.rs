@@ -50,7 +50,7 @@ pub(super) async fn handle_postgres_message(
     );
 
     let result = match message_type {
-        b'Q' => handle_simple_query_message(payload, session, session_manager.clone(), connection_id).await,
+        b'Q' => handle_query_message(payload, session, session_manager.clone(), connection_id).await,
         b'P' => handle_parse_message(payload, connection_state).await,
         b'B' => handle_bind_message(payload, connection_state).await,
         b'E' => handle_execute_message(payload, connection_state, session, session_manager.clone(), connection_id).await,
@@ -85,7 +85,7 @@ pub(super) async fn handle_postgres_message(
     result
 }
 
-async fn handle_simple_query_message(
+async fn handle_query_message(
     payload: &[u8],
     session: &crate::auth::AuthenticatedSession,
     session_manager: Arc<SessionManager>,
@@ -404,9 +404,9 @@ async fn handle_execute_message(
     }
 
     if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
-        info!("📥 SQL Query: {}", final_query.trim().replace('\n', " ").replace('\r', ""));
+        info!("📥 SQL Execute: {}", final_query.trim().replace('\n', " ").replace('\r', ""));
     } else {
-        debug!("🔍 Executing parameterized query: {}", final_query.trim());
+        debug!("📥 SQL Execute: {}", final_query.trim().replace('\n', " ").replace('\r', ""));
     }
 
     // Start query tracking with timing
