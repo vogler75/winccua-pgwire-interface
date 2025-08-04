@@ -108,7 +108,7 @@ async fn handle_simple_query_message(
         return Ok(response);
     }
 
-    if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
+    if crate::LOG_SQL_ROWS.load(std::sync::atomic::Ordering::Relaxed) > 0 {
         info!("📥 SQL Query: {}", query_str.trim().replace('\n', " ").replace('\r', ""));
     } else {
         debug!("📥 SQL Query: {}", query_str.trim().replace('\n', " ").replace('\r', ""));

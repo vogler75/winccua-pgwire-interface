@@ -129,6 +129,46 @@ The debug mode shows detailed connection information including:
 - 📥 Query processing and GraphQL calls
 - 📤 Response generation
 
+### SQL Query Logging with Table Format
+
+The `--log-sql` option enables enhanced SQL query logging with formatted table output:
+
+```bash
+# Enable SQL logging with maximum 50 rows displayed per query
+cargo run -- --graphql-url "http://your-wincc-server/graphql" --log-sql 50
+
+# Enable SQL logging with maximum 10 rows displayed per query
+cargo run -- --graphql-url "http://your-wincc-server/graphql" --log-sql 10
+```
+
+When enabled, the server will log each SQL query and its results in a nicely formatted table showing:
+- **Query Header**: The SQL query, execution time, and total row count
+- **Column Information**: Column names (first row) and PostgreSQL data types (second row)
+- **Data Rows**: Up to the specified number of result rows
+- **Truncation Notice**: If results exceed the row limit
+
+Example output:
+```
+┌─ SQL Query Result ─────────────────────────────────────────
+│ Query: SELECT * FROM tagvalues WHERE tag_name LIKE 'HMI%'
+│ Execution time: 45ms
+│ Rows returned: 3
+└────────────────────────────────────────────────────────────
+┌────────────────┬─────────────────────┬──────────────┐
+│ tag_name       │ timestamp           │ numeric_value│
+│ text           │ timestamp           │ double       │
+├────────────────┼─────────────────────┼──────────────┤
+│ HMI_Tag_1      │ 2024-01-15 10:30:45 │ 123.456      │
+│ HMI_Tag_2      │ 2024-01-15 10:30:46 │ 789.012      │
+│ HMI_Tag_3      │ 2024-01-15 10:30:47 │ NULL         │
+└────────────────┴─────────────────────┴──────────────┘
+```
+
+This feature is particularly useful for:
+- **Development and Testing**: Verify query results without connecting a separate SQL client
+- **Debugging**: Understand data structure and query performance
+- **Monitoring**: Track query patterns and result sizes in production logs
+
 ## Virtual Table Schemas
 
 ### TagValues
@@ -202,7 +242,7 @@ CREATE TABLE loggedalarms (
 
 ### TagList
 ```sql
-CREATE TABLE tag_list (
+CREATE TABLE taglist (
     tag_name TEXT,
     display_name TEXT,
     object_type TEXT,
@@ -269,10 +309,10 @@ FROM activealarms
 WHERE priority >= 10;
 
 -- List all available tags (uses GraphQL browse query)
-SELECT * FROM tag_list;
+SELECT * FROM taglist;
 
 -- Filter tags by pattern
-SELECT * FROM tag_list WHERE tag_name LIKE '%::HMI_%';
+SELECT * FROM taglist WHERE tag_name LIKE '%::HMI_%';
 ```
 
 ## LIKE Pattern Support
@@ -302,15 +342,19 @@ The server supports SQL LIKE patterns with wildcards (`%` and `_`) for tag_name 
 
 ```
 Options:
-  --bind-addr <BIND_ADDR>        Address to bind the server [default: 127.0.0.1:5432]
-  --graphql-url <GRAPHQL_URL>    GraphQL server URL (required)
-  --debug                        Enable debug logging
-  --tls-enabled                  Enable TLS/SSL support
-  --tls-cert <TLS_CERT>          Path to TLS certificate file (PEM format)
-  --tls-key <TLS_KEY>            Path to TLS private key file (PEM format)
-  --tls-ca-cert <TLS_CA_CERT>    Path to CA certificate for client verification (optional)
-  --tls-require-client-cert      Require client certificates for authentication
-  -h, --help                     Print help
+  --bind-addr <BIND_ADDR>              Address to bind the server [default: 127.0.0.1:5432]
+  --graphql-url <GRAPHQL_URL>          GraphQL server URL (required)
+  --debug                              Enable debug logging
+  --tls-enabled                        Enable TLS/SSL support
+  --tls-cert <TLS_CERT>                Path to TLS certificate file (PEM format)
+  --tls-key <TLS_KEY>                  Path to TLS private key file (PEM format)
+  --tls-ca-cert <TLS_CA_CERT>          Path to CA certificate for client verification (optional)
+  --tls-require-client-cert            Require client certificates for authentication
+  --session-extension-interval <SEC>   Session extension interval in seconds [default: 600]
+  --keep-alive-interval <SEC>          Keep-alive interval in seconds [default: 30]
+  --log-sql <ROWS>                     Enable SQL query logging with table format (e.g., --log-sql 100)
+  --quiet-connections                  Suppress connection and authentication log messages
+  -h, --help                           Print help
 ```
 
 ### Environment Variables (Optional)

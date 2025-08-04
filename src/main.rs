@@ -2,14 +2,14 @@ use anyhow::Result;
 use clap::Parser;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use tracing::{info, warn};
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::registry::LookupSpan;
 
-// Global flag for SQL logging
-pub static LOG_SQL: AtomicBool = AtomicBool::new(false);
+// Global setting for SQL logging (0 = disabled, >0 = enabled with row count limit)
+pub static LOG_SQL_ROWS: AtomicU32 = AtomicU32::new(0);
 
 mod auth;
 mod datafusion_handler;
@@ -111,9 +111,9 @@ pub struct Args {
     #[arg(long, default_value_t = 30)]
     pub keep_alive_interval: u64,
 
-    /// Enable SQL query logging at INFO level (default: logs at DEBUG level)
-    #[arg(long)]
-    pub log_sql: bool,
+    /// Enable SQL query logging at INFO level with optional row count limit (e.g., --log-sql 100)
+    #[arg(long, value_name = "ROWS")]
+    pub log_sql: Option<u32>,
 
     /// Suppress connection and authentication log messages
     #[arg(long)]
@@ -148,10 +148,11 @@ async fn main() -> Result<()> {
     info!("Session extension interval: {} seconds", args.session_extension_interval);
     info!("Keep-alive interval: {} seconds", args.keep_alive_interval);
     
-    // Set global SQL logging flag
-    LOG_SQL.store(args.log_sql, Ordering::Relaxed);
-    if args.log_sql {
-        info!("SQL query logging: ENABLED (INFO level)");
+    // Set global SQL logging setting
+    let log_sql_rows = args.log_sql.unwrap_or(0);
+    LOG_SQL_ROWS.store(log_sql_rows, Ordering::Relaxed);
+    if log_sql_rows > 0 {
+        info!("SQL query logging: ENABLED (INFO level, max {} rows)", log_sql_rows);
     } else {
         info!("SQL query logging: DEBUG level only");
     }

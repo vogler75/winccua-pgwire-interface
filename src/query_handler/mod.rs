@@ -73,6 +73,147 @@ impl QueryResult {
         self.rows.len()
     }
     
+    /// Format query result as a table with column names, types, and data
+    pub fn format_as_table(&self, max_rows: u32, sql: &str, overall_time_ms: u64) -> String {
+        use std::fmt::Write;
+        let mut output = String::new();
+        
+        // Query header
+        writeln!(&mut output, "┌─ SQL Query Result ─────────────────────────────────────────").unwrap();
+        writeln!(&mut output, "│ Query: {}", sql.trim().replace('\n', "\n│        ")).unwrap();
+        writeln!(&mut output, "│ Execution time: {}ms", overall_time_ms).unwrap();
+        writeln!(&mut output, "│ Rows returned: {}", self.rows.len()).unwrap();
+        if self.rows.len() as u32 > max_rows {
+            writeln!(&mut output, "│ Showing first {} rows", max_rows).unwrap();
+        }
+        writeln!(&mut output, "└────────────────────────────────────────────────────────────").unwrap();
+        
+        if self.columns.is_empty() {
+            writeln!(&mut output, "No columns in result").unwrap();
+            return output;
+        }
+        
+        // Calculate column widths
+        let mut col_widths: Vec<usize> = self.columns.iter()
+            .map(|col| col.len().max(10)) // Minimum width of 10
+            .collect();
+        
+        // Check data widths (up to max_rows)
+        let display_rows = std::cmp::min(self.rows.len(), max_rows as usize);
+        for row in self.rows.iter().take(display_rows) {
+            for (i, value) in row.iter().enumerate() {
+                if i < col_widths.len() {
+                    let value_str = Self::format_query_value(value);
+                    col_widths[i] = col_widths[i].max(value_str.len());
+                }
+            }
+        }
+        
+        // Limit column width to prevent overly wide tables
+        for width in &mut col_widths {
+            *width = (*width).min(50);
+        }
+        
+        // Header separator
+        write!(&mut output, "┌").unwrap();
+        for (i, &width) in col_widths.iter().enumerate() {
+            write!(&mut output, "{}", "─".repeat(width + 2)).unwrap();
+            if i < col_widths.len() - 1 {
+                write!(&mut output, "┬").unwrap();
+            }
+        }
+        writeln!(&mut output, "┐").unwrap();
+        
+        // Column names row
+        write!(&mut output, "│").unwrap();
+        for (i, col) in self.columns.iter().enumerate() {
+            let truncated = if col.len() > 50 { 
+                format!("{}...", &col[..47]) 
+            } else { 
+                col.clone() 
+            };
+            write!(&mut output, " {:width$} │", truncated, width = col_widths[i]).unwrap();
+        }
+        writeln!(&mut output).unwrap();
+        
+        // Column types row
+        write!(&mut output, "│").unwrap();
+        for (i, &oid) in self.column_types.iter().enumerate() {
+            let type_name = Self::postgres_oid_to_type_name(oid);
+            write!(&mut output, " {:width$} │", type_name, width = col_widths[i]).unwrap();
+        }
+        writeln!(&mut output).unwrap();
+        
+        // Separator between header and data
+        write!(&mut output, "├").unwrap();
+        for (i, &width) in col_widths.iter().enumerate() {
+            write!(&mut output, "{}", "─".repeat(width + 2)).unwrap();
+            if i < col_widths.len() - 1 {
+                write!(&mut output, "┼").unwrap();
+            }
+        }
+        writeln!(&mut output, "┤").unwrap();
+        
+        // Data rows
+        for row in self.rows.iter().take(display_rows) {
+            write!(&mut output, "│").unwrap();
+            for (i, value) in row.iter().enumerate() {
+                if i < col_widths.len() {
+                    let value_str = Self::format_query_value(value);
+                    let truncated = if value_str.len() > 50 { 
+                        format!("{}...", &value_str[..47]) 
+                    } else { 
+                        value_str 
+                    };
+                    write!(&mut output, " {:width$} │", truncated, width = col_widths[i]).unwrap();
+                }
+            }
+            writeln!(&mut output).unwrap();
+        }
+        
+        // Bottom border
+        write!(&mut output, "└").unwrap();
+        for (i, &width) in col_widths.iter().enumerate() {
+            write!(&mut output, "{}", "─".repeat(width + 2)).unwrap();
+            if i < col_widths.len() - 1 {
+                write!(&mut output, "┴").unwrap();
+            }
+        }
+        writeln!(&mut output, "┘").unwrap();
+        
+        if self.rows.len() as u32 > max_rows {
+            writeln!(&mut output, "... {} more rows not shown", self.rows.len() as u32 - max_rows).unwrap();
+        }
+        
+        output
+    }
+    
+    fn format_query_value(value: &QueryValue) -> String {
+        match value {
+            QueryValue::Null => "NULL".to_string(),
+            QueryValue::Text(s) => s.clone(),
+            QueryValue::Integer(i) => i.to_string(),
+            QueryValue::Float(f) => format!("{:.6}", f).trim_end_matches('0').trim_end_matches('.').to_string(),
+            QueryValue::Timestamp(ts) => ts.clone(),
+            QueryValue::Boolean(b) => b.to_string(),
+        }
+    }
+    
+    fn postgres_oid_to_type_name(oid: u32) -> String {
+        match oid {
+            16 => "boolean".to_string(),
+            20 => "bigint".to_string(),
+            21 => "smallint".to_string(),
+            23 => "integer".to_string(),
+            25 => "text".to_string(),
+            700 => "real".to_string(),
+            701 => "double".to_string(),
+            1114 => "timestamp".to_string(),
+            1700 => "numeric".to_string(),
+            _ => format!("oid({})", oid),
+        }
+    }
+    
     
     /// Convert from Arrow RecordBatch
     pub fn from_record_batches(batches: Vec<RecordBatch>) -> Result<Self> {
@@ -213,11 +354,10 @@ impl QueryHandler {
                 final_result.timings.datafusion_time_ms,
                 Some(overall_time_ms),
             ).await;
-            if crate::LOG_SQL.load(std::sync::atomic::Ordering::Relaxed) {
-                info!("🕐 Query completed in {}ms for connection {} (GraphQL: {:?}ms, DataFusion: {:?}ms)", 
-                    overall_time_ms, conn_id, 
-                    final_result.timings.graphql_time_ms,
-                    final_result.timings.datafusion_time_ms);
+            let log_sql_rows = crate::LOG_SQL_ROWS.load(std::sync::atomic::Ordering::Relaxed);
+            if log_sql_rows > 0 {
+                let table = final_result.format_as_table(log_sql_rows, sql, overall_time_ms);
+                info!("📊 SQL Query Result:\n{}", table);
             } else {
                 debug!("🕐 Query completed in {}ms for connection {} (GraphQL: {:?}ms, DataFusion: {:?}ms)", 
                     overall_time_ms, conn_id, 
@@ -226,6 +366,12 @@ impl QueryHandler {
             }
         } else {
             debug!("🔍 No connection_id provided, timing data not saved to session manager");
+            // Still log the table if SQL logging is enabled
+            let log_sql_rows = crate::LOG_SQL_ROWS.load(std::sync::atomic::Ordering::Relaxed);
+            if log_sql_rows > 0 {
+                let table = final_result.format_as_table(log_sql_rows, sql, overall_time_ms);
+                info!("📊 SQL Query Result:\n{}", table);
+            }
         }
 
         Ok(final_result)
@@ -845,5 +991,46 @@ impl QueryHandler {
         query_result.timings.graphql_time_ms = Some(0); // No GraphQL for FROM-less queries
         
         Ok(query_result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_table_formatting() {
+        let mut result = QueryResult::new(
+            vec!["id".to_string(), "name".to_string(), "value".to_string()],
+            vec![23, 25, 701], // integer, text, double
+        );
+        
+        result.add_row(vec![
+            QueryValue::Integer(1),
+            QueryValue::Text("test".to_string()),
+            QueryValue::Float(123.456)
+        ]);
+        result.add_row(vec![
+            QueryValue::Integer(2), 
+            QueryValue::Text("another".to_string()),
+            QueryValue::Null
+        ]);
+        
+        let table = result.format_as_table(10, "SELECT * FROM test", 42);
+        println!("Table output:\n{}", table);
+        
+        // Basic checks
+        assert!(table.contains("SELECT * FROM test"));
+        assert!(table.contains("42ms"));
+        assert!(table.contains("Rows returned: 2"));
+        assert!(table.contains("id"));
+        assert!(table.contains("name"));
+        assert!(table.contains("value"));
+        assert!(table.contains("integer"));
+        assert!(table.contains("text"));
+        assert!(table.contains("double"));
+        assert!(table.contains("test"));
+        assert!(table.contains("another"));
+        assert!(table.contains("NULL"));
     }
 }
