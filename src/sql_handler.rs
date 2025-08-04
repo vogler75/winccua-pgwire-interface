@@ -47,6 +47,12 @@ impl SqlHandler {
     fn is_complex_query(query: &Query) -> bool {
         match &*query.body {
             SetExpr::Select(select) => {
+                // Check for multiple tables in FROM clause (comma-separated joins)
+                if select.from.len() > 1 {
+                    debug!("Complex query detected: multiple tables in FROM clause");
+                    return true;
+                }
+                
                 // Check for JOINs
                 if !select.from.is_empty() && !select.from[0].joins.is_empty() {
                     debug!("Complex query detected: contains JOINs");
@@ -121,6 +127,15 @@ impl SqlHandler {
                     return Self::handle_from_less_query(select, query);
                 }
                 
+                // Check if this is a complex query first
+                let is_complex = Self::is_complex_query(query);
+                
+                // For complex queries, check if they involve catalog tables
+                if is_complex && Self::involves_catalog_tables(select) {
+                    // Handle complex queries with catalog tables - let DataFusion handle everything
+                    return Self::handle_catalog_query(select, query);
+                }
+                
                 let table = Self::extract_table(select)?;
                 let (columns, column_mappings) = Self::extract_columns(select, &table)?;
                 let filters = Self::extract_filters(select, &table)?;
@@ -142,8 +157,6 @@ impl SqlHandler {
 
                 // For complex queries with aggregations or complex expressions,
                 // bypass the strict validation requirements since DataFusion can handle them
-                let is_complex = Self::is_complex_query(query);
-                
                 if !is_complex && !is_catalog_table {
                     Self::validate_query(&query_info)?;
                 }
@@ -206,6 +219,72 @@ impl SqlHandler {
             }
             _ => "?column?".to_string(),
         }
+    }
+    
+    /// Check if a SELECT statement involves catalog tables (pg_catalog.*)
+    fn involves_catalog_tables(select: &Select) -> bool {
+        for from_item in &select.from {
+            match &from_item.relation {
+                datafusion::sql::sqlparser::ast::TableFactor::Table { name, .. } => {
+                    let table_name = name.0.iter()
+                        .map(|part| part.to_string())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    
+                    if table_name.starts_with("pg_catalog.") || table_name.starts_with("\"pg_catalog\".") {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    
+    /// Handle complex queries involving catalog tables
+    fn handle_catalog_query(select: &Select, query: &Query) -> Result<QueryInfo> {
+        // For complex catalog queries, we use a special catalog table marker
+        // The actual SQL will be handled entirely by DataFusion with catalog support
+        
+        // Extract column names from SELECT projection for the result
+        let mut columns = Vec::new();
+        let column_mappings = std::collections::HashMap::new();
+        
+        for item in &select.projection {
+            match item {
+                SelectItem::UnnamedExpr(expr) => {
+                    let column_name = match expr {
+                        Expr::Identifier(ident) => ident.value.clone(),
+                        Expr::CompoundIdentifier(parts) => {
+                            parts.last().map(|p| p.value.clone()).unwrap_or_else(|| "?column?".to_string())
+                        }
+                        _ => Self::generate_column_name_for_expression(expr),
+                    };
+                    columns.push(column_name);
+                }
+                SelectItem::ExprWithAlias { alias, .. } => {
+                    columns.push(alias.value.clone());
+                }
+                SelectItem::Wildcard(_) => {
+                    // For wildcards in complex queries, let DataFusion handle column resolution
+                    columns.push("*".to_string());
+                }
+                SelectItem::QualifiedWildcard(obj_name, _) => {
+                    columns.push(format!("{}.*", obj_name));
+                }
+            }
+        }
+        
+        let limit = query.limit.as_ref().and_then(|l| Self::extract_limit(l));
+        
+        Ok(QueryInfo {
+            table: VirtualTable::CatalogTable("complex_catalog_query".to_string()),
+            columns,
+            column_mappings,
+            filters: vec![], // Filters will be handled by DataFusion
+            limit,
+            order_by: None,
+        })
     }
 
     fn extract_table(select: &Select) -> Result<VirtualTable> {
