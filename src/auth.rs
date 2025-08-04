@@ -63,16 +63,28 @@ pub struct AuthenticatedSession {
     #[allow(dead_code)]
     pub expires: String,
     pub client: Arc<GraphQLClient>,
+    pub session_variables: HashMap<String, String>,
 }
 
 impl AuthenticatedSession {
     pub fn new(username: String, session: Session, client: Arc<GraphQLClient>) -> Self {
+        let mut session_variables = HashMap::new();
+        
+        // Pre-populate default PostgreSQL session variables
+        session_variables.insert("transaction_isolation".to_string(), "read committed".to_string());
+        session_variables.insert("application_name".to_string(), "".to_string());
+        session_variables.insert("client_encoding".to_string(), "UTF8".to_string());
+        session_variables.insert("datestyle".to_string(), "ISO, MDY".to_string());
+        session_variables.insert("extra_float_digits".to_string(), "0".to_string());
+        session_variables.insert("max_identifier_length".to_string(), "63".to_string());
+        
         Self {
             session_id: Uuid::new_v4().to_string(),
             username,
             token: session.token,
             expires: session.expires,
             client,
+            session_variables,
         }
     }
 
@@ -93,6 +105,18 @@ impl AuthenticatedSession {
             }
         }
     }
+    
+    /// Set a session variable
+    pub fn set_session_variable(&mut self, name: &str, value: &str) {
+        debug!("🔧 Setting session variable {} = {} for user {}", name, value, self.username);
+        self.session_variables.insert(name.to_lowercase(), value.to_string());
+    }
+    
+    /// Get a session variable
+    pub fn get_session_variable(&self, name: &str) -> Option<&String> {
+        self.session_variables.get(&name.to_lowercase())
+    }
+    
 }
 
 #[derive(Debug)]
@@ -459,6 +483,27 @@ impl SessionManager {
             } else {
                 ConnectionState::Idle
             };
+        }
+    }
+    
+    /// Set a session variable for a specific session
+    pub async fn set_session_variable(&self, session_id: &str, name: &str, value: &str) -> Result<()> {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.set_session_variable(name, value);
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Session {} not found", session_id))
+        }
+    }
+    
+    /// Get a session variable for a specific session
+    pub async fn get_session_variable(&self, session_id: &str, name: &str) -> Option<String> {
+        let sessions = self.sessions.read().await;
+        if let Some(session) = sessions.get(session_id) {
+            session.get_session_variable(name).cloned()
+        } else {
+            None
         }
     }
 }

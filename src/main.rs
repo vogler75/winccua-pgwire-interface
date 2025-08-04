@@ -237,22 +237,10 @@ async fn main() -> Result<()> {
                 // Print detailed table information
                 for table_name in catalog.get_table_names() {
                     if let Some(table) = catalog.get_table(&table_name) {
-                        // Display access patterns based on table name format
-                        let display_msg = if table_name.starts_with("pg_catalog.") {
-                            if let Some(short_name) = table_name.strip_prefix("pg_catalog.") {
-                                format!("📋 Catalog table '{}' (also accessible as '{}') - {} rows:", 
-                                       table_name, short_name,
-                                       table.data.iter().map(|b| b.num_rows()).sum::<usize>())
-                            } else {
-                                format!("📋 Catalog table '{}' - {} rows:", 
-                                       table_name,
-                                       table.data.iter().map(|b| b.num_rows()).sum::<usize>())
-                            }
-                        } else {
-                            format!("📋 Catalog table '{}' (accessible as 'pg_catalog.{}') - {} rows:", 
-                                   table_name, table_name,
-                                   table.data.iter().map(|b| b.num_rows()).sum::<usize>())
-                        };
+                        // Simple catalog table message
+                        let display_msg = format!("📋 Catalog table '{}' - {} rows:", 
+                                                 table_name,
+                                                 table.data.iter().map(|b| b.num_rows()).sum::<usize>());
                         info!("{}", display_msg);
                         
                         // Print column information

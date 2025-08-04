@@ -285,6 +285,29 @@ def create_catalog_tables(conn: sqlite3.Connection):
         )
     """)
     
+    # pg_settings (configuration parameters)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_settings" (
+            name TEXT PRIMARY KEY,
+            setting TEXT,
+            unit TEXT,
+            category TEXT,
+            short_desc TEXT,
+            extra_desc TEXT,
+            context TEXT,
+            vartype TEXT,
+            source TEXT,
+            min_val TEXT,
+            max_val TEXT,
+            enumvals TEXT,
+            boot_val TEXT,
+            reset_val TEXT,
+            sourcefile TEXT,
+            sourceline INTEGER,
+            pending_restart BOOLEAN
+        )
+    """)
+
     # Create pg_enum (enum values)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS "pg_catalog.pg_enum" (
@@ -342,6 +365,26 @@ def populate_catalog_tables(conn: sqlite3.Connection):
             VALUES (?, ?, 11, ?, ?, 'b', 'U', ?, 'p')
         """, (oid, name, size, size > 0 and size <= 8, align))
     
+    # pg_settings data
+    cursor.execute("""
+        INSERT INTO "pg_catalog.pg_settings" (
+            name, setting, unit, category, short_desc, extra_desc, context, 
+            vartype, source, min_val, max_val, enumvals, boot_val, reset_val, 
+            sourcefile, sourceline, pending_restart
+        ) VALUES 
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        'max_identifier_length', '63', '', 'Preset Options', 
+        'Shows the maximum identifier length.', '', 'internal', 'integer', 
+        'default', '63', '63', 'NULL', '63', '63', '', None, False,
+        
+        'transaction_isolation', 'read committed', '', 'Client Connection Defaults / Statement Behavior',
+        'Sets the current transaction''s isolation level.', '', 'user', 'text',
+        'override', '', '', '{"serializable","repeatable read","read committed","read uncommitted"}',
+        'read committed', 'read committed', '', None, False
+    ))
+
     # Insert tables and columns
     table_oid = 20000
     for table_name, table_info in WINCC_TABLES.items():

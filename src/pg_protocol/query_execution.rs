@@ -86,13 +86,20 @@ pub(super) async fn handle_extended_query_with_connection(
     if is_utility_statement(&trimmed_query) {
         debug!("🔧 Utility statement: {}", query.trim());
 
-        // Check if this is a SET statement - if so, use QueryHandler for proper parsing
+        // Check if this is a SET or SHOW statement - if so, use QueryHandler for proper parsing
         if trimmed_query.starts_with("SET ") {
             debug!(
                 "🔧 SET statement detected, routing to QueryHandler: {}",
                 query.trim()
             );
             let result = crate::query_handler::QueryHandler::execute_query_with_connection(query, session, session_manager.clone(), connection_id).await?;
+            return Ok(super::response::format_query_result_as_extended_query_result(&result));
+        } else if trimmed_query.starts_with("SHOW ") {
+            debug!(
+                "🔍 SHOW statement detected, routing to QueryHandler: {}",
+                query.trim()
+            );
+            let result = crate::query_handler::QueryHandler::handle_show_statement(query, session, session_manager.clone()).await?;
             return Ok(super::response::format_query_result_as_extended_query_result(&result));
         }
 
@@ -138,13 +145,23 @@ pub(super) async fn handle_simple_query_with_connection(
         return Ok(response);
     }
 
-    let trimmed_query = query.trim().to_uppercase();
+    // Split multiple statements by semicolon and execute each one
+    let statements = split_multiple_statements(query);
+    
+    if statements.len() > 1 {
+        debug!("📄 Multiple statements detected: {} statements", statements.len());
+        return handle_multiple_statements(&statements, session, session_manager, connection_id).await;
+    }
+
+    // Handle single statement (original logic)
+    let single_query = &statements[0];
+    let trimmed_query = single_query.trim().to_uppercase();
 
     // Handle transaction control statements that can be safely acknowledged
     if is_transaction_control_statement(&trimmed_query) {
         debug!(
             "📋 Transaction control statement (acknowledged): {}",
-            query.trim()
+            single_query.trim()
         );
         return Ok(create_command_complete_wire_response(
             &get_transaction_command_tag(&trimmed_query),
@@ -153,15 +170,22 @@ pub(super) async fn handle_simple_query_with_connection(
 
     // Handle other utility statements
     if is_utility_statement(&trimmed_query) {
-        debug!("🔧 Utility statement: {}", query.trim());
+        debug!("🔧 Utility statement: {}", single_query.trim());
 
-        // Check if this is a SET statement - if so, use QueryHandler for proper parsing
+        // Check if this is a SET or SHOW statement - if so, use QueryHandler for proper parsing
         if trimmed_query.starts_with("SET ") {
             debug!(
                 "🔧 SET statement detected, routing to QueryHandler: {}",
-                query.trim()
+                single_query.trim()
             );
-            let result = crate::query_handler::QueryHandler::execute_query_with_connection(query, session, session_manager.clone(), connection_id).await?;
+            let result = crate::query_handler::QueryHandler::execute_query_with_connection(single_query, session, session_manager.clone(), connection_id).await?;
+            return Ok(super::response::format_query_result_as_postgres_result(&result));
+        } else if trimmed_query.starts_with("SHOW ") {
+            debug!(
+                "🔍 SHOW statement detected, routing to QueryHandler: {}",
+                single_query.trim()
+            );
+            let result = crate::query_handler::QueryHandler::handle_show_statement(single_query, session, session_manager.clone()).await?;
             return Ok(super::response::format_query_result_as_postgres_result(&result));
         }
 
@@ -173,7 +197,7 @@ pub(super) async fn handle_simple_query_with_connection(
     }
 
     // Use the new query handler for all SQL processing
-    let result = crate::query_handler::QueryHandler::execute_query_with_connection(query, session, session_manager.clone(), connection_id).await?;
+    let result = crate::query_handler::QueryHandler::execute_query_with_connection(single_query, session, session_manager.clone(), connection_id).await?;
     tracing::debug!("🚀 Received result from QueryHandler");
     Ok(super::response::format_query_result_as_postgres_result(&result))
 }
@@ -295,4 +319,168 @@ fn get_utility_command_tag(query: &str) -> String {
     } else {
         "OK".to_string()
     }
+}
+
+/// Split a query string containing multiple SQL statements separated by semicolons
+fn split_multiple_statements(query: &str) -> Vec<String> {
+    // Simple splitting by semicolon - this doesn't handle quoted strings with semicolons,
+    // but should work for most cases like "SET x = y; SET z = w; SHOW something"
+    let mut statements = Vec::new();
+    let mut current_statement = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut chars = query.chars().peekable();
+    
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                current_statement.push(ch);
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                current_statement.push(ch);
+            }
+            ';' if !in_single_quote && !in_double_quote => {
+                // End of statement
+                let trimmed = current_statement.trim();
+                if !trimmed.is_empty() {
+                    statements.push(trimmed.to_string());
+                }
+                current_statement.clear();
+            }
+            _ => {
+                current_statement.push(ch);
+            }
+        }
+    }
+    
+    // Add the last statement if it's not empty
+    let trimmed = current_statement.trim();
+    if !trimmed.is_empty() {
+        statements.push(trimmed.to_string());
+    }
+    
+    // If no statements were found, return the original query
+    if statements.is_empty() {
+        statements.push(query.to_string());
+    }
+    
+    statements
+}
+
+/// Handle multiple SQL statements by executing each one and combining responses
+async fn handle_multiple_statements(
+    statements: &[String],
+    session: &crate::auth::AuthenticatedSession,
+    session_manager: Arc<SessionManager>,
+    connection_id: Option<u32>,
+) -> Result<Vec<u8>> {
+    let mut combined_response = Vec::new();
+    
+    for (i, statement) in statements.iter().enumerate() {
+        let statement = statement.trim();
+        if statement.is_empty() {
+            continue;
+        }
+        
+        debug!("📄 Executing statement {} of {}: {}", i + 1, statements.len(), statement);
+        
+        // Execute each statement individually using the same logic as single statements
+        let single_response = execute_single_statement(statement, session, session_manager.clone(), connection_id).await?;
+        
+        // For PostgreSQL simple query protocol, we need to combine all responses except the final ReadyForQuery
+        // Remove the ReadyForQuery ('Z') message from all but the last response
+        if i == statements.len() - 1 {
+            // Last statement - include ReadyForQuery
+            combined_response.extend_from_slice(&single_response);
+        } else {
+            // Not the last statement - remove ReadyForQuery message
+            let response_without_ready = remove_ready_for_query(&single_response)?;
+            combined_response.extend_from_slice(&response_without_ready);
+        }
+    }
+    
+    Ok(combined_response)
+}
+
+/// Execute a single statement (extracted from the main logic)
+async fn execute_single_statement(
+    query: &str,
+    session: &crate::auth::AuthenticatedSession,
+    session_manager: Arc<SessionManager>,
+    connection_id: Option<u32>,
+) -> Result<Vec<u8>> {
+    let trimmed_query = query.trim().to_uppercase();
+
+    // Handle transaction control statements that can be safely acknowledged
+    if is_transaction_control_statement(&trimmed_query) {
+        debug!(
+            "📋 Transaction control statement (acknowledged): {}",
+            query.trim()
+        );
+        return Ok(create_command_complete_wire_response(
+            &get_transaction_command_tag(&trimmed_query),
+        ));
+    }
+
+    // Handle other utility statements
+    if is_utility_statement(&trimmed_query) {
+        debug!("🔧 Utility statement: {}", query.trim());
+
+        // Check if this is a SET or SHOW statement - if so, use QueryHandler for proper parsing
+        if trimmed_query.starts_with("SET ") {
+            debug!(
+                "🔧 SET statement detected, routing to QueryHandler: {}",
+                query.trim()
+            );
+            let result = crate::query_handler::QueryHandler::execute_query_with_connection(query, session, session_manager.clone(), connection_id).await?;
+            return Ok(super::response::format_query_result_as_postgres_result(&result));
+        } else if trimmed_query.starts_with("SHOW ") {
+            debug!(
+                "🔍 SHOW statement detected, routing to QueryHandler: {}",
+                query.trim()
+            );
+            let result = crate::query_handler::QueryHandler::handle_show_statement(query, session, session_manager.clone()).await?;
+            return Ok(super::response::format_query_result_as_postgres_result(&result));
+        }
+
+        // For other utility statements, just acknowledge
+        return Ok(create_command_complete_wire_response(
+            &get_utility_command_tag(&trimmed_query),
+        ));
+    }
+
+    // Use the new query handler for all SQL processing
+    let result = crate::query_handler::QueryHandler::execute_query_with_connection(query, session, session_manager.clone(), connection_id).await?;
+    Ok(super::response::format_query_result_as_postgres_result(&result))
+}
+
+/// Remove the ReadyForQuery message from a PostgreSQL response
+fn remove_ready_for_query(response: &[u8]) -> Result<Vec<u8>> {
+    if response.len() < 5 {
+        return Ok(response.to_vec());
+    }
+    
+    // Find the last ReadyForQuery message ('Z' followed by length 5)
+    let mut pos = response.len();
+    while pos >= 5 {
+        if response[pos - 5] == b'Z' {
+            // Check if this is a ReadyForQuery message (length should be 5)
+            let length = u32::from_be_bytes([
+                response[pos - 4],
+                response[pos - 3], 
+                response[pos - 2],
+                response[pos - 1]
+            ]);
+            if length == 5 {
+                // Found ReadyForQuery message, return response without it
+                return Ok(response[..pos - 5].to_vec());
+            }
+        }
+        pos -= 1;
+    }
+    
+    // No ReadyForQuery found, return original response
+    Ok(response.to_vec())
 }

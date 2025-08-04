@@ -283,9 +283,8 @@ impl QueryHandler {
                 }
             }
             SqlResult::SetStatement(set_command) => {
-                debug!("✅ Successfully executed SET statement: {}", set_command);
-                // Return empty result for SET statements
-                Ok(QueryResult::new(vec![], vec![]))
+                debug!("✅ Processing SET statement: {}", set_command);
+                Self::handle_set_statement(sql, session, session_manager.clone()).await
             }
         };
 
@@ -898,5 +897,97 @@ impl QueryHandler {
         query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
         query_result.timings.graphql_time_ms = Some(graphql_time_ms);
         Ok(query_result)
+    }
+
+    /// Handle SET statements by updating session variables
+    async fn handle_set_statement(
+        sql: &str,
+        session: &AuthenticatedSession,
+        session_manager: Arc<SessionManager>,
+    ) -> Result<QueryResult> {
+        debug!("🔧 Handling SET statement: {}", sql.trim());
+
+        // Parse the SET statement to extract variable name and value
+        if let Some((var_name, var_value)) = Self::parse_set_statement(sql)? {
+            // Set the session variable
+            session_manager.set_session_variable(&session.session_id, &var_name, &var_value).await?;
+            debug!("✅ Set session variable {} = {}", var_name, var_value);
+        }
+
+        // Return empty result for SET statements (PostgreSQL behavior)
+        Ok(QueryResult::new(vec![], vec![]))
+    }
+
+    /// Handle SHOW statements by returning session variable values
+    pub async fn handle_show_statement(
+        sql: &str,
+        session: &AuthenticatedSession,
+        session_manager: Arc<SessionManager>,
+    ) -> Result<QueryResult> {
+        debug!("🔍 Handling SHOW statement: {}", sql.trim());
+
+        // Parse the SHOW statement to extract variable name
+        if let Some(var_name) = Self::parse_show_statement(sql)? {
+            // Get the session variable value
+            if let Some(var_value) = session_manager.get_session_variable(&session.session_id, &var_name).await {
+                // Determine if the value is numeric and create appropriate result
+                if let Ok(int_value) = var_value.parse::<i64>() {
+                    // Numeric value - use INTEGER type (OID 23)
+                    let mut result = QueryResult::new(vec![var_name.clone()], vec![23]); // INTEGER type
+                    result.add_row(vec![QueryValue::Integer(int_value)]);
+                    Ok(result)
+                } else {
+                    // Text value - use TEXT type (OID 25)
+                    let mut result = QueryResult::new(vec![var_name.clone()], vec![25]); // TEXT type
+                    result.add_row(vec![QueryValue::Text(var_value)]);
+                    Ok(result)
+                }
+            } else {
+                // Variable not found, return NULL with TEXT type
+                let mut result = QueryResult::new(vec![var_name], vec![25]); // TEXT type
+                result.add_row(vec![QueryValue::Null]);
+                Ok(result)
+            }
+        } else {
+            Err(anyhow::anyhow!("Failed to parse SHOW statement: {}", sql))
+        }
+    }
+
+    /// Parse a SET statement to extract variable name and value
+    fn parse_set_statement(sql: &str) -> Result<Option<(String, String)>> {
+        use regex::Regex;
+        
+        // Match patterns like "SET variable_name = 'value'" or "SET variable_name = value"
+        let re = Regex::new(r"(?i)^\s*SET\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+?)\s*;?\s*$").unwrap();
+        
+        if let Some(captures) = re.captures(sql.trim()) {
+            let var_name = captures.get(1).unwrap().as_str().to_lowercase();
+            let mut var_value = captures.get(2).unwrap().as_str().trim();
+            
+            // Remove quotes if present
+            if (var_value.starts_with('\'') && var_value.ends_with('\'')) ||
+               (var_value.starts_with('"') && var_value.ends_with('"')) {
+                var_value = &var_value[1..var_value.len()-1];
+            }
+            
+            Ok(Some((var_name, var_value.to_string())))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Parse a SHOW statement to extract variable name
+    fn parse_show_statement(sql: &str) -> Result<Option<String>> {
+        use regex::Regex;
+        
+        // Match patterns like "SHOW variable_name"
+        let re = Regex::new(r"(?i)^\s*SHOW\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;?\s*$").unwrap();
+        
+        if let Some(captures) = re.captures(sql.trim()) {
+            let var_name = captures.get(1).unwrap().as_str().to_lowercase();
+            Ok(Some(var_name))
+        } else {
+            Ok(None)
+        }
     }
 }
