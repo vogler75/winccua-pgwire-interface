@@ -533,6 +533,12 @@ fn handle_duplicate_column_names(sql: &str) -> String {
     use datafusion::sql::sqlparser::dialect::GenericDialect;
     use datafusion::sql::sqlparser::parser::Parser;
     
+    // First check if we need to handle wildcard expansion conflicts
+    if needs_wildcard_handling(sql) {
+        // Apply a regex-based transformation for wildcard cases
+        return handle_wildcard_duplicates(sql);
+    }
+    
     // Try to parse the SQL - if it fails, return the original SQL
     let dialect = GenericDialect {};
     let ast = match Parser::parse_sql(&dialect, sql) {
@@ -550,6 +556,103 @@ fn handle_duplicate_column_names(sql: &str) -> String {
             }
         }
         _ => sql.to_string(),
+    }
+}
+
+/// Check if the query has potential wildcard expansion conflicts
+fn needs_wildcard_handling(sql: &str) -> bool {
+    // Simple heuristic: check if we have both explicit columns and wildcards from the same table
+    let lower_sql = sql.to_lowercase();
+    lower_sql.contains(".*") && (lower_sql.contains("select") || lower_sql.contains("SELECT"))
+}
+
+/// Handle queries with wildcards that might cause duplicate columns
+fn handle_wildcard_duplicates(sql: &str) -> String {
+    use regex::Regex;
+    
+    // This regex matches patterns like "select o.oid, o.* from"
+    // We need to alias the explicit columns when there's a wildcard from the same table
+    let re = Regex::new(r"(?i)(select\s+)(.*?)(\s+from\s+)").unwrap();
+    
+    if let Some(captures) = re.captures(sql) {
+        let select_clause = captures.get(2).unwrap().as_str();
+        
+        // Check if we have both explicit columns and wildcards
+        if select_clause.contains(".*") {
+            // Parse the select items
+            let items: Vec<&str> = select_clause.split(',').map(|s| s.trim()).collect();
+            let mut modified_items = Vec::new();
+            let mut seen_tables_with_wildcard = std::collections::HashSet::new();
+            
+            // First pass: identify tables that have wildcards
+            for item in &items {
+                if let Some(table_prefix) = extract_table_from_wildcard(item) {
+                    seen_tables_with_wildcard.insert(table_prefix);
+                }
+            }
+            
+            // Second pass: add aliases to explicit columns from tables that also have wildcards
+            let mut alias_counter = 1;
+            for item in items {
+                if item.contains(".*") {
+                    // Keep wildcards as-is
+                    modified_items.push(item.to_string());
+                } else if let Some(table_prefix) = extract_table_prefix(item) {
+                    if seen_tables_with_wildcard.contains(&table_prefix) {
+                        // This column is from a table that also has a wildcard
+                        // Add an alias to avoid conflicts
+                        let column_name = extract_column_name(item);
+                        modified_items.push(format!("{} AS {}_{}", item, column_name, alias_counter));
+                        alias_counter += 1;
+                    } else {
+                        modified_items.push(item.to_string());
+                    }
+                } else {
+                    modified_items.push(item.to_string());
+                }
+            }
+            
+            // Reconstruct the query
+            let modified_select = modified_items.join(", ");
+            return format!("{}{}{}{}", 
+                captures.get(1).unwrap().as_str(),
+                modified_select,
+                captures.get(3).unwrap().as_str(),
+                &sql[captures.get(0).unwrap().end()..]);
+        }
+    }
+    
+    sql.to_string()
+}
+
+/// Extract table prefix from a wildcard expression like "o.*"
+fn extract_table_from_wildcard(expr: &str) -> Option<String> {
+    if expr.ends_with(".*") {
+        let parts: Vec<&str> = expr.trim().split('.').collect();
+        if parts.len() >= 2 {
+            return Some(parts[0].to_string());
+        }
+    }
+    None
+}
+
+/// Extract table prefix from a column expression like "o.oid"
+fn extract_table_prefix(expr: &str) -> Option<String> {
+    let parts: Vec<&str> = expr.trim().split('.').collect();
+    if parts.len() >= 2 {
+        Some(parts[0].to_string())
+    } else {
+        None
+    }
+}
+
+/// Extract column name from an expression
+fn extract_column_name(expr: &str) -> String {
+    let parts: Vec<&str> = expr.trim().split('.').collect();
+    if parts.len() >= 2 {
+        parts.last().unwrap_or(&expr).to_string()
+    } else {
+        expr.trim().to_string()
     }
 }
 
