@@ -278,7 +278,7 @@ fn get_transaction_command_tag(query: &str) -> String {
         "RELEASE".to_string()
     } else if query.starts_with("ROLLBACK TO SAVEPOINT") {
         "ROLLBACK".to_string()
-    } else if query.starts_with("SET TRANSACTION") {
+    } else if query.starts_with("SET TRANSACTION") || query.starts_with("SET SESSION CHARACTERISTICS AS TRANSACTION") {
         "SET".to_string()
     } else {
         "OK".to_string()
