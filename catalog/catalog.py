@@ -283,7 +283,8 @@ def create_catalog_tables(conn: sqlite3.Connection):
             datlastsysoid INTEGER NOT NULL,
             datfrozenxid INTEGER NOT NULL,
             datminmxid INTEGER NOT NULL,
-            dattablespace INTEGER NOT NULL
+            dattablespace INTEGER NOT NULL,
+            datacl TEXT NULL
         )
     """)
     
@@ -465,7 +466,7 @@ def populate_catalog_tables(conn: sqlite3.Connection):
             dattablespace 
         ) VALUES 
             (13769, 'postgres', 10, 6, 'en_US.UTF-8', 'en_US.UTF-8', false, 
-             true, -1, 0, 0, 0, 0)
+             true, -1, 1, -1, 0, 3)
     """)        
     
     conn.commit()
