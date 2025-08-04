@@ -527,6 +527,105 @@ pub fn register_postgresql_functions(ctx: &SessionContext) -> Result<()> {
     Ok(())
 }
 
+/// Handle duplicate column names in SELECT projections by adding auto-generated aliases
+fn handle_duplicate_column_names(sql: &str) -> String {
+    use datafusion::sql::sqlparser::ast::Statement;
+    use datafusion::sql::sqlparser::dialect::GenericDialect;
+    use datafusion::sql::sqlparser::parser::Parser;
+    
+    // Try to parse the SQL - if it fails, return the original SQL
+    let dialect = GenericDialect {};
+    let ast = match Parser::parse_sql(&dialect, sql) {
+        Ok(ast) if ast.len() == 1 => ast,
+        _ => return sql.to_string(),
+    };
+    
+    let statement = &ast[0];
+    match statement {
+        Statement::Query(query) => {
+            if let Some(modified_query) = add_column_aliases_to_query(query) {
+                modified_query.to_string()
+            } else {
+                sql.to_string()
+            }
+        }
+        _ => sql.to_string(),
+    }
+}
+
+/// Add aliases to duplicate column names in a query
+fn add_column_aliases_to_query(query: &datafusion::sql::sqlparser::ast::Query) -> Option<datafusion::sql::sqlparser::ast::Query> {
+    use datafusion::sql::sqlparser::ast::{SetExpr, SelectItem};
+    use std::collections::HashMap;
+    match &*query.body {
+        SetExpr::Select(select) => {
+            let mut column_counts: HashMap<String, i32> = HashMap::new();
+            let mut modified_projection = Vec::new();
+            let mut has_modifications = false;
+            
+            // Process each projection item
+            for item in &select.projection {
+                match item {
+                    SelectItem::UnnamedExpr(expr) => {
+                        let column_name = expr.to_string();
+                        let count = column_counts.entry(column_name.clone()).or_insert(0);
+                        *count += 1;
+                        
+                        if *count > 1 {
+                            // Create alias for duplicate column
+                            let alias_name = format!("{}_{}", column_name, count);
+                            let alias = datafusion::sql::sqlparser::ast::Ident::new(alias_name);
+                            modified_projection.push(SelectItem::ExprWithAlias {
+                                expr: expr.clone(),
+                                alias,
+                            });
+                            has_modifications = true;
+                        } else {
+                            modified_projection.push(item.clone());
+                        }
+                    }
+                    SelectItem::ExprWithAlias { expr, alias } => {
+                        // Already has alias, just track the alias name
+                        let alias_name = alias.value.clone();
+                        let count = column_counts.entry(alias_name.clone()).or_insert(0);
+                        *count += 1;
+                        
+                        if *count > 1 {
+                            // Create new alias for duplicate alias name
+                            let new_alias_name = format!("{}_{}", alias_name, count);
+                            let new_alias = datafusion::sql::sqlparser::ast::Ident::new(new_alias_name);
+                            modified_projection.push(SelectItem::ExprWithAlias {
+                                expr: expr.clone(),
+                                alias: new_alias,
+                            });
+                            has_modifications = true;
+                        } else {
+                            modified_projection.push(item.clone());
+                        }
+                    }
+                    _ => {
+                        // Wildcards and other items - keep as is
+                        modified_projection.push(item.clone());
+                    }
+                }
+            }
+            
+            if has_modifications {
+                let mut modified_select = select.as_ref().clone();
+                modified_select.projection = modified_projection;
+                
+                let mut modified_query = query.clone();
+                modified_query.body = Box::new(SetExpr::Select(Box::new(modified_select)));
+                
+                Some(modified_query)
+            } else {
+                None
+            }
+        }
+        _ => None
+    }
+}
+
 /// Replace schema-qualified table names with underscore versions and handle PostgreSQL type casts
 pub fn normalize_schema_qualified_tables(sql: &str) -> String {
     normalize_schema_qualified_tables_with_username(sql, "postgres")
@@ -573,6 +672,8 @@ pub fn normalize_schema_qualified_tables_with_username(sql: &str, username: &str
     // For example: "SELECT db.oid, db.*" returns oid twice - once for explicit selection, once from wildcard
     // We preserve this behavior by NOT removing duplicates, matching PostgreSQL's semantics
     
+    // Handle duplicate column names in SELECT projections by adding aliases
+    processed_sql = handle_duplicate_column_names(&processed_sql);
     
     processed_sql
 }
@@ -584,13 +685,17 @@ pub async fn execute_query(
 ) -> Result<(Vec<RecordBatch>, u64)> {
     let start_time = Instant::now();
     
+    // Pre-process SQL to handle duplicate column names and normalize schema-qualified table names
+    let processed_sql = normalize_schema_qualified_tables(sql);
+    debug!("🔧 Processed SQL: {} -> {}", sql, processed_sql);
+    
     let ctx = SessionContext::new();
     
     // Register PostgreSQL system functions
     register_postgresql_functions(&ctx)?;
     
     ctx.register_batch(table_name, batch)?;
-    let df = ctx.sql(sql).await?;
+    let df = ctx.sql(&processed_sql).await?;
     let results = df.collect().await?;
     
     let elapsed_ms = start_time.elapsed().as_millis() as u64;

@@ -201,8 +201,14 @@ fn arrow_type_to_postgres_oid(data_type: &DataType) -> u32 {
 // Extract a value from an Arrow array at a specific index
 fn extract_value_from_array(array: &dyn arrow::array::Array, index: usize) -> Result<QueryValue> {
     use arrow::array::*;
+    use arrow::datatypes::DataType;
     
     if array.is_null(index) {
+        return Ok(QueryValue::Null);
+    }
+    
+    // Check if this is a NullArray (all values are NULL)
+    if array.data_type() == &DataType::Null {
         return Ok(QueryValue::Null);
     }
     
@@ -211,8 +217,12 @@ fn extract_value_from_array(array: &dyn arrow::array::Array, index: usize) -> Re
         Ok(QueryValue::Boolean(arr.value(index)))
     } else if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
         Ok(QueryValue::Integer(arr.value(index)))
+    } else if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
+        Ok(QueryValue::Integer(arr.value(index) as i64))
     } else if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
         Ok(QueryValue::Float(arr.value(index)))
+    } else if let Some(arr) = array.as_any().downcast_ref::<Float32Array>() {
+        Ok(QueryValue::Float(arr.value(index) as f64))
     } else if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
         Ok(QueryValue::Text(arr.value(index).to_string()))
     } else if let Some(arr) = array.as_any().downcast_ref::<TimestampNanosecondArray>() {
@@ -220,9 +230,13 @@ fn extract_value_from_array(array: &dyn arrow::array::Array, index: usize) -> Re
         let datetime = chrono::DateTime::from_timestamp_nanos(timestamp);
         // Use PostgreSQL TIMESTAMP format: YYYY-MM-DD HH:MM:SS.ssssss
         Ok(QueryValue::Timestamp(datetime.format("%Y-%m-%d %H:%M:%S%.6f").to_string()))
+    } else if let Some(_) = array.as_any().downcast_ref::<NullArray>() {
+        // Explicit handling for NullArray
+        Ok(QueryValue::Null)
     } else {
-        // Fallback: convert to string
-        Ok(QueryValue::Text(format!("{:?}", array)))
+        // For unknown types, log a debug message and return the data type info
+        debug!("Unknown array type encountered: {:?}", array.data_type());
+        Ok(QueryValue::Text(format!("Unknown[{:?}]", array.data_type())))
     }
 }
 
