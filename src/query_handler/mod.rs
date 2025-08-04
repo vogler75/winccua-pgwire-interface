@@ -50,6 +50,8 @@ pub struct QueryResult {
     pub rows: Vec<Vec<QueryValue>>,
     /// Timing information (if available)
     pub timings: QueryTimings,
+    /// Command tag for utility statements (e.g., "SET", "BEGIN", "COMMIT")
+    pub command_tag: Option<String>,
 }
 
 impl QueryResult {
@@ -60,6 +62,18 @@ impl QueryResult {
             column_types,
             rows: Vec::new(),
             timings: QueryTimings::default(),
+            command_tag: None,
+        }
+    }
+    
+    /// Create a command result (for SET, BEGIN, etc.)
+    pub fn command(tag: &str) -> Self {
+        Self {
+            columns: Vec::new(),
+            column_types: Vec::new(),
+            rows: Vec::new(),
+            timings: QueryTimings::default(),
+            command_tag: Some(tag.to_string()),
         }
     }
     
@@ -113,6 +127,7 @@ impl QueryResult {
             .collect();
         
         let mut result = QueryResult::new(clean_headers, col_types);
+        result.command_tag = None; // CSV strings don't have command tags
         
         // Process data rows
         for line in lines.iter().skip(1) {
@@ -155,6 +170,7 @@ impl QueryResult {
         }
         
         let mut result = QueryResult::new(columns, column_types);
+        result.command_tag = None; // Record batches don't have command tags
         
         // Process each batch
         for batch in batches {
@@ -928,8 +944,8 @@ impl QueryHandler {
             debug!("✅ Set session variable {} = {}", var_name, var_value);
         }
 
-        // Return empty result for SET statements (PostgreSQL behavior)
-        Ok(QueryResult::new(vec![], vec![]))
+        // Return command result for SET statements
+        Ok(QueryResult::command("SET"))
     }
 
     /// Handle SHOW statements by returning session variable values

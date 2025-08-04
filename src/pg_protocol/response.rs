@@ -485,6 +485,25 @@ pub(super) fn format_query_result_as_postgres_result(result: &crate::query_handl
     tracing::debug!("🚀 Columns: {:?}", result.columns);
     tracing::debug!("🚀 Column types: {:?}", result.column_types);
     
+    // Check if this is a command result (SET, BEGIN, etc.)
+    if let Some(command_tag) = &result.command_tag {
+        tracing::debug!("🚀 Command result detected: {}", command_tag);
+        
+        // Command complete message: 'C' (CommandComplete) + length + tag
+        response.push(b'C'); // 'C' = CommandComplete message
+        let tag_length = 4 + command_tag.len() + 1; // 4 bytes for length + tag + null terminator
+        response.extend_from_slice(&(tag_length as u32).to_be_bytes());
+        response.extend_from_slice(command_tag.as_bytes());
+        response.push(0); // Null terminator
+
+        // Ready for query message: 'Z' (ReadyForQuery) + length + status
+        response.push(b'Z'); // 'Z' = ReadyForQuery message
+        response.extend_from_slice(&5u32.to_be_bytes()); // Length: 4 + 1 = 5
+        response.push(b'I'); // Status: 'I' = idle (not in transaction)
+
+        return response;
+    }
+    
     // RowDescription message: 'T' (RowDescription) + length + field_count + fields
     tracing::debug!("🚀 Creating RowDescription message ('T') with {} columns", result.columns.len());
     response.push(b'T'); // 'T' = RowDescription message
@@ -605,6 +624,20 @@ pub(super) fn format_query_result_as_extended_query_result(result: &crate::query
     let mut response = Vec::new();
     
     tracing::debug!("🚀 format_query_result_as_extended_query_result() CALLED: {} columns, {} rows", result.columns.len(), result.rows.len());
+    
+    // Check if this is a command result (SET, BEGIN, etc.)
+    if let Some(command_tag) = &result.command_tag {
+        tracing::debug!("🚀 Command result detected for extended query: {}", command_tag);
+        
+        // Command complete message: 'C' (CommandComplete) + length + tag
+        response.push(b'C'); // 'C' = CommandComplete message
+        let tag_length = 4 + command_tag.len() + 1; // 4 bytes for length + tag + null terminator
+        response.extend_from_slice(&(tag_length as u32).to_be_bytes());
+        response.extend_from_slice(command_tag.as_bytes());
+        response.push(0); // Null terminator
+
+        return response;
+    }
     
     // DataRow messages only (no RowDescription - that was sent by Describe)
     for row in &result.rows {
