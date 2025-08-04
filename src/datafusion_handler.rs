@@ -133,7 +133,7 @@ impl ScalarUDFImpl for PgGetFunctionIdentityArgumentsUDF {
     }
 
     fn name(&self) -> &str {
-        "pg_get_function_identity_arguments"
+        "pg_catalog_pg_get_function_identity_arguments"
     }
 
     fn signature(&self) -> &Signature {
@@ -444,7 +444,7 @@ impl ScalarUDFImpl for PgGetExprUDF {
     }
 
     fn name(&self) -> &str {
-        "pg_get_expr"
+        "pg_catalog_pg_get_expr"
     }
 
     fn signature(&self) -> &Signature {
@@ -625,6 +625,117 @@ impl ScalarUDFImpl for NullIfUDF {
     }
 }
 
+/// Implementation of pg_get_partkeydef function
+#[derive(Debug)]
+struct PgGetPartKeyDefUDF {
+    signature: Signature,
+}
+
+impl PgGetPartKeyDefUDF {
+    fn new() -> Self {
+        Self {
+            signature: Signature::any(1, Volatility::Stable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for PgGetPartKeyDefUDF {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "pg_catalog_pg_get_partkeydef"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
+        use arrow::array::{Array, Int32Array, Int64Array, StringArray};
+        use arrow::compute::kernels::cast;
+        
+        let args = args.args;
+        if args.len() != 1 {
+            return Err(datafusion::error::DataFusionError::Internal("pg_get_partkeydef expects 1 argument".to_string()));
+        }
+        
+        let table_oids = args[0].clone().into_array(1)?;
+        let mut results = Vec::new();
+        
+        // Handle both Int32 and Int64 table OIDs
+        match table_oids.data_type() {
+            DataType::Int32 => {
+                let oid_array = table_oids.as_any().downcast_ref::<Int32Array>().unwrap();
+                for i in 0..oid_array.len() {
+                    if oid_array.is_null(i) {
+                        results.push(None);
+                    } else {
+                        let oid = oid_array.value(i);
+                        let partition_def = Self::get_partition_key_definition(oid as i64);
+                        results.push(partition_def);
+                    }
+                }
+            }
+            DataType::Int64 => {
+                let oid_array = table_oids.as_any().downcast_ref::<Int64Array>().unwrap();
+                for i in 0..oid_array.len() {
+                    if oid_array.is_null(i) {
+                        results.push(None);
+                    } else {
+                        let oid = oid_array.value(i);
+                        let partition_def = Self::get_partition_key_definition(oid);
+                        results.push(partition_def);
+                    }
+                }
+            }
+            _ => {
+                // Try to cast to Int32
+                let casted = cast::cast(table_oids.as_ref(), &DataType::Int32)?;
+                let casted_i32 = casted.as_any().downcast_ref::<Int32Array>().unwrap();
+                for i in 0..casted_i32.len() {
+                    if casted_i32.is_null(i) {
+                        results.push(None);
+                    } else {
+                        let oid = casted_i32.value(i);
+                        let partition_def = Self::get_partition_key_definition(oid as i64);
+                        results.push(partition_def);
+                    }
+                }
+            }
+        }
+        
+        let result_array = StringArray::from(results);
+        Ok(ColumnarValue::Array(Arc::new(result_array)))
+    }
+}
+
+impl PgGetPartKeyDefUDF {
+    /// Get partition key definition for a given table OID
+    /// Returns None for all tables (following PostgreSQL behavior for non-partitioned tables)
+    /// 
+    /// # Behavior
+    /// - Returns NULL for all tables since WinCC UA doesn't use partitioned tables
+    /// - In PostgreSQL, this would query pg_partitioned_table and reconstruct the PARTITION BY clause
+    fn get_partition_key_definition(_table_oid: i64) -> Option<String> {
+        // For our WinCC UA implementation, we don't have actual partitioned tables,
+        // so we return None for all table OIDs (indicating non-partitioned tables)
+        // This matches PostgreSQL's behavior of returning NULL for non-partitioned tables
+        
+        // In a real PostgreSQL implementation, this would:
+        // 1. Look up the table in pg_class to verify it exists and is partitioned (relkind = 'p')
+        // 2. Query pg_partitioned_table to get the partition key information
+        // 3. Reconstruct the PARTITION BY clause from the stored metadata
+        
+        None
+    }
+}
+
 /// Register PostgreSQL system functions with DataFusion context
 pub fn register_postgresql_functions(ctx: &SessionContext) -> Result<()> {
     ctx.register_udf(ScalarUDF::new_from_impl(PgGetUserByIdUDF::new()));
@@ -635,6 +746,7 @@ pub fn register_postgresql_functions(ctx: &SessionContext) -> Result<()> {
     ctx.register_udf(ScalarUDF::new_from_impl(FormatTypeUDF::new()));
     ctx.register_udf(ScalarUDF::new_from_impl(PgGetExprUDF::new()));
     ctx.register_udf(ScalarUDF::new_from_impl(NullIfUDF::new()));
+    ctx.register_udf(ScalarUDF::new_from_impl(PgGetPartKeyDefUDF::new()));
     Ok(())
 }
 
@@ -1278,6 +1390,105 @@ mod tests {
                             if error_msg.contains("ParserError") && error_msg.contains("Expected: end of statement, found: AS") {
                                 println!("🎯 Found the exact parser error in DataFusion execution!");
                             }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_pg_get_partkeydef_function() {
+        use arrow::array::Array; // Import Array trait for len() and is_null() methods
+        
+        // Test the pg_get_partkeydef function implementation
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            // Create a test table with some OID values
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("oid", DataType::Int32, false),
+                Field::new("relname", DataType::Utf8, false),
+            ]));
+
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Int32Array::from(vec![12345, 12346, 12347, 12348, 99999])),
+                    Arc::new(StringArray::from(vec!["measurements", "customers", "regions", "events", "regular_table"])),
+                ],
+            ).unwrap();
+
+            // Test various pg_get_partkeydef calls
+            // Use pg_catalog.pg_get_partkeydef to test the SQL normalization pathway
+            // All calls should return NULL since WinCC UA doesn't have partitioned tables
+            let test_cases = [
+                // Test with various table OIDs - all should return NULL
+                ("SELECT oid, relname, pg_catalog.pg_get_partkeydef(oid) as partition_key FROM test_table WHERE oid = 12345", true, "NULL"),
+                ("SELECT oid, relname, pg_catalog.pg_get_partkeydef(oid) as partition_key FROM test_table WHERE oid = 12346", true, "NULL"),
+                ("SELECT oid, relname, pg_catalog.pg_get_partkeydef(oid) as partition_key FROM test_table WHERE oid = 12347", true, "NULL"),
+                ("SELECT oid, relname, pg_catalog.pg_get_partkeydef(oid) as partition_key FROM test_table WHERE oid = 12348", true, "NULL"),
+                ("SELECT oid, relname, pg_catalog.pg_get_partkeydef(oid) as partition_key FROM test_table WHERE oid = 99999", true, "NULL"),
+                // Test with all OIDs - all should return NULL
+                ("SELECT oid, relname, pg_catalog.pg_get_partkeydef(oid) as partition_key FROM test_table", true, "all_null"),
+            ];
+
+            for (sql, should_succeed, expected_content) in test_cases {
+                println!("\n🧪 Testing pg_get_partkeydef: {}", sql);
+
+                // Use the full normalization pipeline by calling execute_query with normalized SQL
+                let normalized_sql = normalize_schema_qualified_tables(sql);
+                
+                match execute_query(&normalized_sql, batch.clone(), "test_table").await {
+                    Ok((results, elapsed)) => {
+                        if should_succeed {
+                            println!("✅ SQL executed successfully in {} ms", elapsed);
+                            println!("📊 Results: {} batches", results.len());
+                            
+                            for (i, result_batch) in results.iter().enumerate() {
+                                println!("  Batch {}: {} rows, {} columns", i, result_batch.num_rows(), result_batch.num_columns());
+                                let schema = result_batch.schema();
+                                let column_names: Vec<String> = schema.fields().iter().map(|f| f.name().to_string()).collect();
+                                println!("  Schema: {:?}", column_names);
+                                
+                                // Check that we have the partition_key column
+                                if column_names.iter().any(|name| name == "partition_key") {
+                                    let partition_col_idx = column_names.iter().position(|name| name == "partition_key").unwrap();
+                                    let partition_column = result_batch.column(partition_col_idx);
+                                    
+                                    if let Some(string_array) = partition_column.as_any().downcast_ref::<StringArray>() {
+                                        println!("  Partition key values: {:?}", (0..string_array.len()).map(|i| {
+                                            if string_array.is_null(i) { "NULL".to_string() } else { string_array.value(i).to_string() }
+                                        }).collect::<Vec<_>>());
+                                        
+                                        // Verify expected content
+                                        if expected_content == "all_null" {
+                                            // Check that all values are NULL
+                                            let all_null = (0..string_array.len()).all(|i| string_array.is_null(i));
+                                            assert!(all_null, "Expected all values to be NULL");
+                                            println!("  ✅ Verified all {} values are NULL", string_array.len());
+                                        } else if result_batch.num_rows() == 1 {
+                                            // Single row verification
+                                            let actual_value = if string_array.is_null(0) { "NULL" } else { string_array.value(0) };
+                                            if expected_content == "NULL" {
+                                                assert!(string_array.is_null(0), "Expected NULL but got: {}", actual_value);
+                                            } else {
+                                                assert_eq!(actual_value, expected_content, "Expected '{}' but got '{}'", expected_content, actual_value);
+                                            }
+                                            println!("  ✅ Verified expected result: {}", if expected_content == "NULL" { "NULL" } else { expected_content });
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            println!("⚠️  SQL unexpectedly succeeded when it should have failed");
+                        }
+                    }
+                    Err(e) => {
+                        if should_succeed {
+                            println!("❌ SQL execution failed unexpectedly: {}", e);
+                            panic!("pg_get_partkeydef test failed: {}", e);
+                        } else {
+                            println!("❌ SQL execution failed as expected: {}", e);
                         }
                     }
                 }

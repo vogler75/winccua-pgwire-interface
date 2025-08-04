@@ -124,6 +124,25 @@ def create_catalog_tables(conn: sqlite3.Connection):
     """Create PostgreSQL catalog tables in SQLite."""
     cursor = conn.cursor()
     
+    # Drop existing tables to ensure clean recreation
+    tables_to_drop = [
+        "pg_catalog.pg_namespace",
+        "pg_catalog.pg_class", 
+        "pg_catalog.pg_attribute",
+        "pg_catalog.pg_type",
+        "pg_catalog.pg_proc",
+        "pg_catalog.pg_description",
+        "pg_catalog.pg_database",
+        "pg_catalog.pg_settings",
+        "pg_catalog.pg_enum",
+        "pg_catalog.pg_roles",
+        "pg_catalog.pg_attrdef",
+        "pg_catalog.pg_index"
+    ]
+    
+    for table in tables_to_drop:
+        cursor.execute(f'DROP TABLE IF EXISTS "{table}"')
+    
     # Create pg_namespace (schemas)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS "pg_catalog.pg_namespace" (
@@ -139,23 +158,37 @@ def create_catalog_tables(conn: sqlite3.Connection):
         CREATE TABLE IF NOT EXISTS "pg_catalog.pg_class" (
             oid INTEGER PRIMARY KEY,
             relname TEXT NOT NULL,
-            relnamespace INTEGER,
-            reltype INTEGER,
-            relowner INTEGER,
-            relam INTEGER,
-            relfilenode INTEGER,
-            relpages INTEGER,
-            reltuples REAL,
-            relhasindex BOOLEAN,
-            relisshared BOOLEAN,
-            relkind TEXT,
-            relnatts INTEGER,
-            reltablespace INTEGER,
-            relhasoids BOOLEAN,
-            relhasrules BOOLEAN,
-            relhastriggers BOOLEAN,
-            relhassubclass BOOLEAN,
-            relacl TEXT
+            relnamespace INTEGER NOT NULL,
+            reltype INTEGER NOT NULL,
+            reloftype INTEGER NOT NULL,
+            relowner INTEGER NOT NULL,
+            relam INTEGER NOT NULL,
+            relfilenode INTEGER NOT NULL,
+            reltablespace INTEGER NOT NULL,
+            relpages INTEGER NOT NULL,
+            reltuples REAL NOT NULL,
+            relallvisible INTEGER NOT NULL,
+            reltoastrelid INTEGER NOT NULL,
+            relhasindex BOOLEAN NOT NULL,
+            relisshared BOOLEAN NOT NULL,
+            relpersistence TEXT NOT NULL,
+            relkind TEXT NOT NULL,
+            relnatts INTEGER NOT NULL,
+            relchecks INTEGER NOT NULL,
+            relhasrules BOOLEAN NOT NULL,
+            relhastriggers BOOLEAN NOT NULL,
+            relhassubclass BOOLEAN NOT NULL,
+            relrowsecurity BOOLEAN NOT NULL,
+            relforcerowsecurity BOOLEAN NOT NULL,
+            relispopulated BOOLEAN NOT NULL,
+            relreplident TEXT NOT NULL,
+            relispartition BOOLEAN NOT NULL,
+            relrewrite INTEGER NOT NULL,
+            relfrozenxid INTEGER NOT NULL,
+            relminmxid INTEGER NOT NULL,
+            relacl TEXT,
+            reloptions TEXT,
+            relpartbound TEXT
         )
     """)
     
@@ -475,10 +508,17 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     for table_name, table_info in WINCC_TABLES.items():
         # Insert table into pg_class
         cursor.execute("""
-            INSERT INTO "pg_catalog.pg_class" (oid, relname, relnamespace, reltype, relkind, 
-                                relnatts, relhasindex, relisshared, relhasrules, relhassubclass)
-            VALUES (?, ?, 2200, 0, 'r', ?, false, false, false, false)
-        """, (table_oid, table_name, len(table_info['columns'])))
+            INSERT INTO "pg_catalog.pg_class" (
+                oid, relname, relnamespace, reltype, reloftype, relowner, relam, relfilenode,
+                reltablespace, relpages, reltuples, relallvisible, reltoastrelid, relhasindex,
+                relisshared, relpersistence, relkind, relnatts, relchecks, relhasrules,
+                relhastriggers, relhassubclass, relrowsecurity, relforcerowsecurity,
+                relispopulated, relreplident, relispartition, relrewrite, relfrozenxid,
+                relminmxid, relacl, reloptions, relpartbound
+            )
+            VALUES (?, ?, 2200, 0, 0, 10, 0, ?, 0, 0, 0.0, 0, 0, false, false, 'p', 'r', ?, 0, 
+                   false, false, false, false, false, true, 'd', false, 0, 0, 0, NULL, NULL, NULL)
+        """, (table_oid, table_name, table_oid, len(table_info['columns'])))
         
         # Insert table description
         cursor.execute("""
