@@ -365,7 +365,7 @@ async fn main() -> Result<()> {
                         let display_msg = format!("📋 Catalog table '{}' - {} rows:", 
                                                  table_name,
                                                  table.data.iter().map(|b| b.num_rows()).sum::<usize>());
-                        info!("{}", display_msg);
+                        debug!("{}", display_msg);
                         
                         // Print column information
                         for (col_name, pg_type) in &table.pg_schema {

@@ -357,6 +357,32 @@ def create_catalog_tables(conn: sqlite3.Connection):
             adbin TEXT NOT NULL
         )
     """)
+    
+    # Create pg_index (indexes)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_index" (
+            indexrelid INTEGER NOT NULL,
+            indrelid INTEGER NOT NULL,
+            indnatts INTEGER NOT NULL,
+            indnkeyatts INTEGER NOT NULL,
+            indisunique BOOLEAN NOT NULL,
+            indisprimary BOOLEAN NOT NULL,
+            indisexclusion BOOLEAN NOT NULL,
+            indimmediate BOOLEAN NOT NULL,
+            indisclustered BOOLEAN NOT NULL,
+            indisvalid BOOLEAN NOT NULL,
+            indcheckxmin BOOLEAN NOT NULL,
+            indisready BOOLEAN NOT NULL,
+            indislive BOOLEAN NOT NULL,
+            indisreplident BOOLEAN NOT NULL,
+            indkey TEXT NOT NULL,
+            indcollation TEXT NOT NULL,
+            indclass TEXT NOT NULL,
+            indoption TEXT NOT NULL,
+            indexprs TEXT,
+            indpred TEXT
+        )
+    """)
         
     conn.commit()
 
@@ -376,7 +402,8 @@ def populate_catalog_tables(conn: sqlite3.Connection):
         "pg_catalog.pg_settings",
         "pg_catalog.pg_enum",
         "pg_catalog.pg_roles",
-        "pg_catalog.pg_attrdef"
+        "pg_catalog.pg_attrdef",
+        "pg_catalog.pg_index"
     ]
     
     for table in tables_to_clear:
@@ -400,8 +427,8 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     for type_name, (oid, name, size, align) in PG_TYPE_MAPPINGS.items():
         cursor.execute("""
             INSERT INTO "pg_catalog.pg_type" (oid, typname, typnamespace, typlen, typbyval, 
-                               typtype, typcategory, typalign, typstorage)
-            VALUES (?, ?, 11, ?, ?, 'b', 'U', ?, 'p')
+                               typtype, typcategory, typalign, typstorage, typtypmod)
+            VALUES (?, ?, 11, ?, ?, 'b', 'U', ?, 'p', -1)
         """, (oid, name, size, size > 0 and size <= 8, align))
     
     # pg_settings data
@@ -447,34 +474,38 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     table_oid = 20000
     for table_name, table_info in WINCC_TABLES.items():
         # Insert table into pg_class
-        #cursor.execute("""
-        #    INSERT INTO "pg_catalog.pg_class" (oid, relname, relnamespace, reltype, relkind, 
-        #                        relnatts, relhasindex, relisshared)
-        #    VALUES (?, ?, 2200, 0, 'r', ?, false, false)
-        #""", (table_oid, table_name, len(table_info['columns'])))
+        cursor.execute("""
+            INSERT INTO "pg_catalog.pg_class" (oid, relname, relnamespace, reltype, relkind, 
+                                relnatts, relhasindex, relisshared, relhasrules, relhassubclass)
+            VALUES (?, ?, 2200, 0, 'r', ?, false, false, false, false)
+        """, (table_oid, table_name, len(table_info['columns'])))
         
         # Insert table description
-        #cursor.execute("""
-        #    INSERT INTO "pg_catalog.pg_description" (objoid, classoid, objsubid, description)
-        #    VALUES (?, 1259, 0, ?)
-        #""", (table_oid, table_info['description']))
+        cursor.execute("""
+            INSERT INTO "pg_catalog.pg_description" (objoid, classoid, objsubid, description)
+            VALUES (?, 1259, 0, ?)
+        """, (table_oid, table_info['description']))
         
         # Insert columns
-        #for attnum, (col_name, col_type, col_desc) in enumerate(table_info['columns'], 1):
-        #    type_oid, _, type_len, _ = PG_TYPE_MAPPINGS[col_type]
-        #    
-        #    cursor.execute("""
-        #        INSERT INTO "pg_catalog.pg_attribute" (attrelid, attname, atttypid, attlen, 
-        #                                attnum, attnotnull, attisdropped)
-        #        VALUES (?, ?, ?, ?, ?, false, false)
-        #    """, (table_oid, col_name, type_oid, type_len, attnum))
-        #    
-        #    # Insert column description
-        #    cursor.execute("""
-        #        INSERT INTO "pg_catalog.pg_description" (objoid, classoid, objsubid, description)
-        #        VALUES (?, 1259, ?, ?)
-        #    """, (table_oid, attnum, col_desc))
-        
+        for attnum, (col_name, col_type, col_desc) in enumerate(table_info['columns'], 1):
+            type_oid, _, type_len, _ = PG_TYPE_MAPPINGS[col_type]
+            
+            cursor.execute("""
+                INSERT INTO "pg_catalog.pg_attribute" (
+                    attrelid, attname, atttypid, attstattarget, attlen, attnum, attndims,
+                    attcacheoff, atttypmod, attbyval, attalign, attstorage, attcompression,
+                    attnotnull, atthasdef, atthasmissing, attidentity, attgenerated,
+                    attisdropped, attislocal, attinhcount, attcollation
+                )
+                VALUES (?, ?, ?, -1, ?, ?, 0, -1, -1, ?, 'i', 'p', '', false, false, false, '', '', false, true, 0, 0)
+            """, (table_oid, col_name, type_oid, type_len, attnum, type_len > 0 and type_len <= 8))
+            
+            # Insert column description
+            cursor.execute("""
+                INSERT INTO "pg_catalog.pg_description" (objoid, classoid, objsubid, description)
+                VALUES (?, 1259, ?, ?)
+            """, (table_oid, attnum, col_desc))
+       
         table_oid += 1
     
     # Insert database information
