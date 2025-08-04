@@ -224,6 +224,13 @@ impl VirtualTable {
     pub fn is_selectable_column(&self, column: &str) -> bool {
         self.get_column_names().contains(&column) && !self.is_virtual_column(column)
     }
+
+    pub fn get_column_type(&self, column: &str) -> Option<Type> {
+        self.get_schema()
+            .into_iter()
+            .find(|(name, _)| *name == column)
+            .map(|(_, typ)| typ)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -244,6 +251,8 @@ pub enum FilterOperator {
     GreaterThanOrEqual,
     LessThanOrEqual,
     Between,
+    IsNull,
+    IsNotNull,
 }
 
 #[derive(Debug, Clone)]
@@ -254,9 +263,43 @@ pub enum FilterValue {
     Timestamp(String),
     List(Vec<String>),
     Range(Box<FilterValue>, Box<FilterValue>),
+    Null, // For IS NULL / IS NOT NULL checks
 }
 
 impl FilterValue {
+    pub fn from_string_value_for_column(value: &str, column_type: Option<Type>) -> Self {
+        match column_type {
+            Some(Type::TIMESTAMP) => Self::Timestamp(value.to_string()),
+            Some(Type::INT4) | Some(Type::INT8) => {
+                if let Ok(i) = value.parse::<i64>() {
+                    Self::Integer(i)
+                } else {
+                    Self::String(value.to_string())
+                }
+            }
+            Some(Type::NUMERIC) | Some(Type::FLOAT4) | Some(Type::FLOAT8) => {
+                if let Ok(f) = value.parse::<f64>() {
+                    Self::Number(f)
+                } else {
+                    Self::String(value.to_string())
+                }
+            }
+            _ => {
+                // Fallback: try to detect timestamp-like strings
+                if Self::is_timestamp_like(value) {
+                    Self::Timestamp(value.to_string())
+                } else {
+                    Self::String(value.to_string())
+                }
+            }
+        }
+    }
+
+    fn is_timestamp_like(s: &str) -> bool {
+        // Simple heuristic: contains date-like patterns
+        s.contains('-') && (s.contains('T') || s.contains(' ')) && s.len() >= 10
+    }
+
     pub fn as_string(&self) -> Option<&str> {
         match self {
             Self::String(s) => Some(s),

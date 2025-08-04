@@ -2,7 +2,6 @@
 pub mod active_alarms_handler;
 pub mod logged_alarms_handler;
 pub mod logged_tag_values_handler;
-pub mod pg_stat_activity_handler;
 pub mod tag_list_handler;
 pub mod tag_values_handler;
 
@@ -74,66 +73,6 @@ impl QueryResult {
         self.rows.len()
     }
     
-    /// Temporary compatibility function to convert from CSV strings
-    /// This should be removed when all handlers are updated
-    pub fn from_csv_string(csv_data: &str) -> Result<Self> {
-        let lines: Vec<&str> = csv_data.trim().split('\n').collect();
-        if lines.is_empty() {
-            return Ok(QueryResult::new(vec![], vec![]));
-        }
-        
-        // Parse CSV header with type information
-        let headers = super::pg_protocol::response::parse_csv_line(lines[0]);
-        let mut column_types: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-        let mut clean_headers: Vec<String> = Vec::new();
-        
-        for header in &headers {
-            if header.contains(':') {
-                let parts: Vec<&str> = header.splitn(2, ':').collect();
-                if parts.len() == 2 {
-                    clean_headers.push(parts[0].to_string());
-                    let type_oid = match parts[1] {
-                        "NUMERIC" => 1700,
-                        "TIMESTAMP" => 1114,
-                        "TEXT" => 25,
-                        _ => 25,
-                    };
-                    column_types.insert(parts[0].to_string(), type_oid);
-                } else {
-                    clean_headers.push(header.clone());
-                }
-            } else {
-                clean_headers.push(header.clone());
-            }
-        }
-        
-        // Create column types vector
-        let col_types: Vec<u32> = clean_headers.iter()
-            .map(|name| column_types.get(name).copied().unwrap_or(25))
-            .collect();
-        
-        let mut result = QueryResult::new(clean_headers, col_types);
-        
-        // Process data rows
-        for line in lines.iter().skip(1) {
-            if line.trim().is_empty() {
-                continue;
-            }
-            
-            let values = super::pg_protocol::response::parse_csv_line(line);
-            let row: Vec<QueryValue> = values.into_iter().map(|v| {
-                if v == "NULL" {
-                    QueryValue::Null
-                } else {
-                    QueryValue::Text(v)
-                }
-            }).collect();
-            
-            result.add_row(row);
-        }
-        
-        Ok(result)
-    }
     
     /// Convert from Arrow RecordBatch
     pub fn from_record_batches(batches: Vec<RecordBatch>) -> Result<Self> {
@@ -246,38 +185,8 @@ impl QueryHandler {
         // Handle based on result type
         let result = match sql_result {
             SqlResult::Query(query_info) => {
-                // Execute based on table type
-                match query_info.table {
-                    VirtualTable::TagValues => {
-                        Self::execute_datafusion_query(sql, &query_info, session).await
-                    }
-                    VirtualTable::LoggedTagValues => {
-                        Self::execute_loggedtagvalues_datafusion_query(sql, &query_info, session)
-                            .await
-                    }
-                    VirtualTable::ActiveAlarms => {
-                        Self::execute_active_alarms_datafusion_query(sql, &query_info, session).await
-                    }
-                    VirtualTable::LoggedAlarms => {
-                        Self::execute_logged_alarms_datafusion_query(sql, &query_info, session).await
-                    }
-                    VirtualTable::TagList => {
-                        Self::execute_taglist_datafusion_query(sql, &query_info, session).await
-                    }
-                    VirtualTable::InformationSchemaTables
-                    | VirtualTable::InformationSchemaColumns => {
-                        crate::information_schema::handle_information_schema_query(&query_info)
-                    }
-                    VirtualTable::PgStatActivity => {
-                        // Use the pg_stat_activity handler with DataFusion
-                        crate::query_handler::pg_stat_activity_handler::handle_pg_stat_activity_query(
-                            sql, session, session_manager.clone()
-                        ).await
-                    }
-                    VirtualTable::FromLessQuery => {
-                        Self::execute_from_less_query(sql, &query_info, session).await
-                    }
-                }
+                // Route all queries through unified DataFusion execution
+                Self::execute_unified_datafusion_query(sql, &query_info, session, session_manager.clone()).await
             }
             SqlResult::SetStatement(set_command) => {
                 debug!("✅ Successfully executed SET statement: {}", set_command);
@@ -322,16 +231,70 @@ impl QueryHandler {
         Ok(final_result)
     }
 
-    async fn execute_taglist_datafusion_query(
+    async fn execute_unified_datafusion_query(
         sql: &str,
         query_info: &QueryInfo,
         session: &AuthenticatedSession,
+        session_manager: Arc<SessionManager>,
     ) -> Result<QueryResult> {
+        debug!("🚀 Executing unified DataFusion query for table: {}", query_info.table.to_string());
+        
         let graphql_start = std::time::Instant::now();
-        let results = Self::fetch_tag_list_data(query_info, session).await?;
+        
+        // Generate data based on table type
+        let batch = match query_info.table {
+            VirtualTable::TagValues => {
+                let results = Self::fetch_tag_values_data(query_info, session).await?;
+                Self::create_tag_values_record_batch(results)?
+            }
+            VirtualTable::LoggedTagValues => {
+                let results = Self::fetch_logged_tag_values_data(query_info, session).await?;
+                Self::create_logged_tag_values_record_batch(results)?
+            }
+            VirtualTable::ActiveAlarms => {
+                let results = Self::fetch_active_alarms_data(query_info, session).await?;
+                Self::create_active_alarms_record_batch(results)?
+            }
+            VirtualTable::LoggedAlarms => {
+                let results = Self::fetch_logged_alarms_data(query_info, session).await?;
+                Self::create_logged_alarms_record_batch(results)?
+            }
+            VirtualTable::TagList => {
+                let results = Self::fetch_tag_list_data(query_info, session).await?;
+                Self::create_tag_list_record_batch(results)?
+            }
+            VirtualTable::InformationSchemaTables => {
+                Self::create_information_schema_tables_record_batch(query_info)?
+            }
+            VirtualTable::InformationSchemaColumns => {
+                Self::create_information_schema_columns_record_batch(query_info)?
+            }
+            VirtualTable::PgStatActivity => {
+                Self::create_pg_stat_activity_record_batch(session_manager).await?
+            }
+            VirtualTable::FromLessQuery => {
+                // For FROM-less queries, create an empty batch and use DataFusion directly
+                return Self::execute_from_less_query_datafusion(sql, session).await;
+            }
+        };
+        
         let graphql_time_ms = graphql_start.elapsed().as_millis() as u64;
+        
+        // Execute with DataFusion
+        let (results, datafusion_time_ms) =
+            datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
 
-        // Define the schema
+        // Convert results to QueryResult
+        let mut query_result = QueryResult::from_record_batches(results)?;
+        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
+        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
+        
+        debug!("🔍 Unified query timings: GraphQL={}ms, DataFusion={}ms", graphql_time_ms, datafusion_time_ms);
+        
+        Ok(query_result)
+    }
+
+    fn create_tag_list_record_batch(results: Vec<crate::graphql::types::BrowseResult>) -> Result<RecordBatch> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("tag_name", DataType::Utf8, false),
             Field::new("display_name", DataType::Utf8, true),
@@ -339,7 +302,6 @@ impl QueryHandler {
             Field::new("data_type", DataType::Utf8, true),
         ]));
 
-        // Create columns from the results
         let (tag_names, display_names, object_types, data_types) = results.into_iter().fold(
             (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
             |mut acc, result| {
@@ -351,247 +313,157 @@ impl QueryHandler {
             },
         );
 
-        // Create a RecordBatch
-        let batch = RecordBatch::try_new(
-            schema.clone(),
+        RecordBatch::try_new(
+            schema,
             vec![
                 Arc::new(StringArray::from(tag_names)),
                 Arc::new(StringArray::from(display_names)),
                 Arc::new(StringArray::from(object_types)),
                 Arc::new(StringArray::from(data_types)),
             ],
-        )?;
-
-        // Execute the query using DataFusion
-        let (results, datafusion_time_ms) =
-            datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
-
-        // Convert RecordBatch results directly to QueryResult
-        let mut query_result = QueryResult::from_record_batches(results)?;
-        
-        // Add timing information
-        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
-        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
-        
-        debug!("🔍 TagList query timings: GraphQL={}ms, DataFusion={}ms", graphql_time_ms, datafusion_time_ms);
-        
-        Ok(query_result)
+        ).map_err(Into::into)
     }
 
-    async fn execute_loggedtagvalues_datafusion_query(
-        sql: &str,
-        query_info: &QueryInfo,
-        session: &AuthenticatedSession,
-    ) -> Result<QueryResult> {
-        let graphql_start = std::time::Instant::now();
-        let results = Self::fetch_logged_tag_values_data(query_info, session).await?;
-        let graphql_time_ms = graphql_start.elapsed().as_millis() as u64;
-
-        // Define the schema
+    fn create_logged_tag_values_record_batch(results: Vec<crate::graphql::types::LoggedTagValue>) -> Result<RecordBatch> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("tag_name", DataType::Utf8, false),
-            Field::new(
-                "timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                true,
-            ),
+            Field::new("timestamp", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
             Field::new("timestamp_ms", DataType::Int64, true),
             Field::new("numeric_value", DataType::Float64, true),
             Field::new("string_value", DataType::Utf8, true),
             Field::new("quality", DataType::Utf8, true),
         ]));
 
-        // Create columns from the results
-        let (
-            tag_names,
-            timestamps,
-            timestamps_ms,
-            numeric_values,
-            string_values,
-            qualities,
-        ) = results.into_iter().fold(
-            (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ),
-            |mut acc, result| {
-                acc.0.push(result.tag_name);
-                let ts_nanos = chrono::DateTime::parse_from_rfc3339(&result.timestamp)
-                    .map(|dt| dt.timestamp_nanos_opt())
-                    .unwrap_or_default();
-                acc.1.push(ts_nanos);
-                acc.2.push(ts_nanos.map(|t| t / 1_000_000));
-                acc.3.push(result.value.as_ref().and_then(|v| v.as_f64()));
-                acc.4
-                    .push(result.value.as_ref().and_then(|v| v.as_str()).map(|s| s.to_string()));
-                acc.5
-                    .push(result.quality.map(|q| q.quality));
-                acc
-            },
-        );
+        let (tag_names, timestamps, timestamp_ms_vec, numeric_values, string_values, qualities) = 
+            results.into_iter().fold(
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                |mut acc, result| {
+                    acc.0.push(result.tag_name);
+                    
+                    // Parse timestamp
+                    let timestamp_ns = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&result.timestamp) {
+                        Some(dt.timestamp_nanos_opt().unwrap_or(0))
+                    } else {
+                        None
+                    };
+                    acc.1.push(timestamp_ns);
+                    acc.2.push(timestamp_ns.map(|ns| ns / 1_000_000)); // Convert to milliseconds
+                    
+                    // Handle values
+                    if let Some(value) = result.value {
+                        if let Some(num) = value.as_f64() {
+                            acc.3.push(Some(num));
+                            acc.4.push(None);
+                        } else if let Some(str_val) = value.as_str() {
+                            acc.3.push(None);
+                            acc.4.push(Some(str_val.to_string()));
+                        } else {
+                            acc.3.push(None);
+                            acc.4.push(Some(value.to_string()));
+                        }
+                    } else {
+                        acc.3.push(None);
+                        acc.4.push(None);
+                    }
+                    
+                    acc.5.push(result.quality.map(|q| q.quality));
+                    acc
+                },
+            );
 
-        // Create a RecordBatch
-        let batch = RecordBatch::try_new(
-            schema.clone(),
+        RecordBatch::try_new(
+            schema,
             vec![
                 Arc::new(StringArray::from(tag_names)),
                 Arc::new(TimestampNanosecondArray::from(timestamps)),
-                Arc::new(Int64Array::from(timestamps_ms)),
+                Arc::new(Int64Array::from(timestamp_ms_vec)),
                 Arc::new(Float64Array::from(numeric_values)),
                 Arc::new(StringArray::from(string_values)),
                 Arc::new(StringArray::from(qualities)),
             ],
-        )?;
-
-        // Execute the query using DataFusion
-        let (results, datafusion_time_ms) =
-            datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
-
-        // Convert RecordBatch results directly to QueryResult
-        let mut query_result = QueryResult::from_record_batches(results)?;
-        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
-        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
-        Ok(query_result)
+        ).map_err(Into::into)
     }
 
-    async fn execute_datafusion_query(
-        sql: &str,
-        query_info: &QueryInfo,
-        session: &AuthenticatedSession,
-    ) -> Result<QueryResult> {
-        let graphql_start = std::time::Instant::now();
-        let results = Self::fetch_tag_values_data(query_info, session).await?;
-        let graphql_time_ms = graphql_start.elapsed().as_millis() as u64;
-
-        // Define the schema
+    fn create_tag_values_record_batch(results: Vec<crate::graphql::types::TagValueResult>) -> Result<RecordBatch> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("tag_name", DataType::Utf8, false),
-            Field::new(
-                "timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                true,
-            ),
+            Field::new("timestamp", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
             Field::new("timestamp_ms", DataType::Int64, true),
             Field::new("numeric_value", DataType::Float64, true),
             Field::new("string_value", DataType::Utf8, true),
             Field::new("quality", DataType::Utf8, true),
         ]));
 
-        // Create columns from the results
-        let (
-            tag_names,
-            timestamps,
-            timestamps_ms,
-            numeric_values,
-            string_values,
-            qualities,
-        ) = results.into_iter().fold(
-            (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ),
-            |mut acc, result| {
-                acc.0.push(result.name);
-                if let Some(value) = result.value {
-                    let ts_nanos = chrono::DateTime::parse_from_rfc3339(&value.timestamp)
-                        .map(|dt| dt.timestamp_nanos_opt())
-                        .unwrap_or_default();
-                    acc.1.push(ts_nanos);
-                    acc.2.push(ts_nanos.map(|t| t / 1_000_000));
-                    acc.3.push(value.value.as_ref().and_then(|v| v.as_f64()));
-                    acc.4
-                        .push(value.value.as_ref().and_then(|v| v.as_str()).map(|s| s.to_string()));
-                    acc.5
-                        .push(value.quality.map(|q| q.quality));
-                } else {
-                    acc.1.push(None);
-                    acc.2.push(None);
-                    acc.3.push(None);
-                    acc.4.push(None);
-                    acc.5.push(None);
-                }
-                acc
-            },
-        );
+        let (tag_names, timestamps, timestamp_ms_vec, numeric_values, string_values, qualities) = 
+            results.into_iter().fold(
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                |mut acc, result| {
+                    acc.0.push(result.name);
+                    
+                    if let Some(value) = result.value {
+                        // Parse timestamp
+                        let timestamp_ns = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&value.timestamp) {
+                            Some(dt.timestamp_nanos_opt().unwrap_or(0))
+                        } else {
+                            None
+                        };
+                        acc.1.push(timestamp_ns);
+                        acc.2.push(timestamp_ns.map(|ns| ns / 1_000_000));
+                        
+                        // Handle values
+                        if let Some(val) = value.value {
+                            if let Some(num) = val.as_f64() {
+                                acc.3.push(Some(num));
+                                acc.4.push(None);
+                            } else if let Some(str_val) = val.as_str() {
+                                acc.3.push(None);
+                                acc.4.push(Some(str_val.to_string()));
+                            } else {
+                                acc.3.push(None);
+                                acc.4.push(Some(val.to_string()));
+                            }
+                        } else {
+                            acc.3.push(None);
+                            acc.4.push(None);
+                        }
+                        
+                        acc.5.push(value.quality.map(|q| q.quality));
+                    } else {
+                        acc.1.push(None);
+                        acc.2.push(None);
+                        acc.3.push(None);
+                        acc.4.push(None);
+                        acc.5.push(None);
+                    }
+                    acc
+                },
+            );
 
-        // Create a RecordBatch
-        let batch = RecordBatch::try_new(
-            schema.clone(),
+        RecordBatch::try_new(
+            schema,
             vec![
                 Arc::new(StringArray::from(tag_names)),
                 Arc::new(TimestampNanosecondArray::from(timestamps)),
-                Arc::new(Int64Array::from(timestamps_ms)),
+                Arc::new(Int64Array::from(timestamp_ms_vec)),
                 Arc::new(Float64Array::from(numeric_values)),
                 Arc::new(StringArray::from(string_values)),
                 Arc::new(StringArray::from(qualities)),
             ],
-        )?;
-
-        // Execute the query using DataFusion
-        let (results, datafusion_time_ms) =
-            datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
-
-        // Convert RecordBatch results directly to QueryResult
-        let mut query_result = QueryResult::from_record_batches(results)?;
-        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
-        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
-        Ok(query_result)
+        ).map_err(Into::into)
     }
 
-    async fn execute_from_less_query(
-        sql: &str,
-        _query_info: &QueryInfo, 
-        session: &AuthenticatedSession,
-    ) -> Result<QueryResult> {
-        debug!("🔍 Executing FROM-less query: {}", sql.trim());
-        
-        // For SELECT 1 queries, extend the session as a keep-alive
-        if sql.trim().to_uppercase().contains("SELECT 1") {
-            match session.client.extend_session(&session.token).await {
-                Ok(_) => debug!("✅ Session extended successfully for SELECT 1"),
-                Err(e) => warn!("⚠️ Failed to extend session: {}", e),
-            }
-        }
-        
-        // Use DataFusion to execute the FROM-less query directly
-        let ctx = datafusion::prelude::SessionContext::new();
-        
-        // Execute the query
-        let df = ctx.sql(sql).await?;
-        let batches = df.collect().await?;
-        
-        // Convert the results to QueryResult
-        QueryResult::from_record_batches(batches)
-    }
-
-    async fn execute_active_alarms_datafusion_query(
-        sql: &str,
-        query_info: &QueryInfo,
-        session: &AuthenticatedSession,
-    ) -> Result<QueryResult> {
-        let graphql_start = std::time::Instant::now();
-        let results = Self::fetch_active_alarms_data(query_info, session).await?;
-        let graphql_time_ms = graphql_start.elapsed().as_millis() as u64;
-
-        // Define the schema
+    fn create_active_alarms_record_batch(results: Vec<crate::graphql::types::ActiveAlarm>) -> Result<RecordBatch> {
+        // Create schema based on active alarms table definition
         let schema = Arc::new(Schema::new(vec![
             Field::new("name", DataType::Utf8, false),
-            Field::new("instance_id", DataType::Int64, false),
+            Field::new("instance_id", DataType::Int64, true),
             Field::new("alarm_group_id", DataType::Int64, true),
-            Field::new("raise_time", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new("raise_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
             Field::new("acknowledgment_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
             Field::new("clear_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
             Field::new("reset_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
-            Field::new("modification_time", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
-            Field::new("state", DataType::Utf8, false),
+            Field::new("modification_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("state", DataType::Utf8, true),
             Field::new("priority", DataType::Int64, true),
             Field::new("event_text", DataType::Utf8, true),
             Field::new("info_text", DataType::Utf8, true),
@@ -602,79 +474,28 @@ impl QueryHandler {
             Field::new("user_name", DataType::Utf8, true),
         ]));
 
-        // Create columns from the results
-        let (
-            names,
-            instance_ids,
-            alarm_group_ids,
-            raise_times,
-            acknowledgment_times,
-            clear_times,
-            reset_times,
-            modification_times,
-            states,
-            priorities,
-            event_texts,
-            info_texts,
-            origins,
-            areas,
-            values,
-            host_names,
-            user_names,
-        ) = results.into_iter().fold(
-            (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ),
+        let (names, instance_ids, alarm_group_ids, raise_times, ack_times, clear_times, 
+             reset_times, mod_times, states, priorities, event_texts, info_texts, 
+             origins, areas, values, host_names, user_names) = results.into_iter().fold(
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+             Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+             Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
             |mut acc, result| {
                 acc.0.push(result.name);
-                acc.1.push(result.instance_id as i64);
-                acc.2.push(result.alarm_group_id.map(|id| id as i64));
+                acc.1.push(Some(result.instance_id as i64));
+                acc.2.push(result.alarm_group_id.map(|i| i as i64));
                 
-                let raise_time_nanos = chrono::DateTime::parse_from_rfc3339(&result.raise_time)
-                    .map(|dt| dt.timestamp_nanos_opt())
-                    .unwrap_or_default();
-                acc.3.push(raise_time_nanos);
+                // Parse timestamps  
+                acc.3.push(Self::parse_string_timestamp_to_nanos(&result.raise_time));
+                acc.4.push(Self::parse_timestamp_to_nanos(&result.acknowledgment_time));
+                acc.5.push(Self::parse_timestamp_to_nanos(&result.clear_time));
+                acc.6.push(Self::parse_timestamp_to_nanos(&result.reset_time));
+                acc.7.push(Self::parse_string_timestamp_to_nanos(&result.modification_time));
                 
-                let ack_time_nanos = result.acknowledgment_time.as_ref()
-                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .and_then(|dt| dt.timestamp_nanos_opt());
-                acc.4.push(ack_time_nanos);
-                
-                let clear_time_nanos = result.clear_time.as_ref()
-                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .and_then(|dt| dt.timestamp_nanos_opt());
-                acc.5.push(clear_time_nanos);
-                
-                let reset_time_nanos = result.reset_time.as_ref()
-                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .and_then(|dt| dt.timestamp_nanos_opt());
-                acc.6.push(reset_time_nanos);
-                
-                let modification_time_nanos = chrono::DateTime::parse_from_rfc3339(&result.modification_time)
-                    .map(|dt| dt.timestamp_nanos_opt())
-                    .unwrap_or_default();
-                acc.7.push(modification_time_nanos);
-                
-                acc.8.push(result.state);
+                acc.8.push(Some(result.state));
                 acc.9.push(result.priority.map(|p| p as i64));
-                acc.10.push(result.event_text.map(|v| v.join(";")));
-                acc.11.push(result.info_text.map(|v| v.join(";")));
+                acc.10.push(result.event_text.map(|texts| texts.join(", ")));
+                acc.11.push(result.info_text.map(|texts| texts.join(", ")));
                 acc.12.push(result.origin);
                 acc.13.push(result.area);
                 acc.14.push(result.value.map(|v| v.to_string()));
@@ -684,18 +505,17 @@ impl QueryHandler {
             },
         );
 
-        // Create a RecordBatch
-        let batch = RecordBatch::try_new(
-            schema.clone(),
+        RecordBatch::try_new(
+            schema,
             vec![
                 Arc::new(StringArray::from(names)),
                 Arc::new(Int64Array::from(instance_ids)),
                 Arc::new(Int64Array::from(alarm_group_ids)),
                 Arc::new(TimestampNanosecondArray::from(raise_times)),
-                Arc::new(TimestampNanosecondArray::from(acknowledgment_times)),
+                Arc::new(TimestampNanosecondArray::from(ack_times)),
                 Arc::new(TimestampNanosecondArray::from(clear_times)),
                 Arc::new(TimestampNanosecondArray::from(reset_times)),
-                Arc::new(TimestampNanosecondArray::from(modification_times)),
+                Arc::new(TimestampNanosecondArray::from(mod_times)),
                 Arc::new(StringArray::from(states)),
                 Arc::new(Int64Array::from(priorities)),
                 Arc::new(StringArray::from(event_texts)),
@@ -706,39 +526,21 @@ impl QueryHandler {
                 Arc::new(StringArray::from(host_names)),
                 Arc::new(StringArray::from(user_names)),
             ],
-        )?;
-
-        // Execute the query using DataFusion
-        let (results, datafusion_time_ms) =
-            datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
-
-        // Convert RecordBatch results directly to QueryResult
-        let mut query_result = QueryResult::from_record_batches(results)?;
-        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
-        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
-        Ok(query_result)
+        ).map_err(Into::into)
     }
 
-    async fn execute_logged_alarms_datafusion_query(
-        sql: &str,
-        query_info: &QueryInfo,
-        session: &AuthenticatedSession,
-    ) -> Result<QueryResult> {
-        let graphql_start = std::time::Instant::now();
-        let results = Self::fetch_logged_alarms_data(query_info, session).await?;
-        let graphql_time_ms = graphql_start.elapsed().as_millis() as u64;
-
-        // Define the schema
+    fn create_logged_alarms_record_batch(results: Vec<crate::graphql::types::LoggedAlarm>) -> Result<RecordBatch> {
+        // Similar to active alarms but with duration field
         let schema = Arc::new(Schema::new(vec![
             Field::new("name", DataType::Utf8, false),
-            Field::new("instance_id", DataType::Int64, false),
+            Field::new("instance_id", DataType::Int64, true),
             Field::new("alarm_group_id", DataType::Int64, true),
-            Field::new("raise_time", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new("raise_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
             Field::new("acknowledgment_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
             Field::new("clear_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
             Field::new("reset_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
-            Field::new("modification_time", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
-            Field::new("state", DataType::Utf8, false),
+            Field::new("modification_time", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("state", DataType::Utf8, true),
             Field::new("priority", DataType::Int64, true),
             Field::new("event_text", DataType::Utf8, true),
             Field::new("info_text", DataType::Utf8, true),
@@ -750,81 +552,28 @@ impl QueryHandler {
             Field::new("duration", DataType::Utf8, true),
         ]));
 
-        // Create columns from the results
-        let (
-            names,
-            instance_ids,
-            alarm_group_ids,
-            raise_times,
-            acknowledgment_times,
-            clear_times,
-            reset_times,
-            modification_times,
-            states,
-            priorities,
-            event_texts,
-            info_texts,
-            origins,
-            areas,
-            values,
-            host_names,
-            user_names,
-            durations,
-        ) = results.into_iter().fold(
-            (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ),
+        let (names, instance_ids, alarm_group_ids, raise_times, ack_times, clear_times, 
+             reset_times, mod_times, states, priorities, event_texts, info_texts, 
+             origins, areas, values, host_names, user_names, durations) = results.into_iter().fold(
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+             Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+             Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
             |mut acc, result| {
                 acc.0.push(result.name);
-                acc.1.push(result.instance_id as i64);
-                acc.2.push(result.alarm_group_id.map(|id| id as i64));
+                acc.1.push(Some(result.instance_id as i64));
+                acc.2.push(result.alarm_group_id.map(|i| i as i64));
                 
-                let raise_time_nanos = chrono::DateTime::parse_from_rfc3339(&result.raise_time)
-                    .map(|dt| dt.timestamp_nanos_opt())
-                    .unwrap_or_default();
-                acc.3.push(raise_time_nanos);
+                // Parse timestamps
+                acc.3.push(Self::parse_string_timestamp_to_nanos(&result.raise_time));
+                acc.4.push(Self::parse_timestamp_to_nanos(&result.acknowledgment_time));
+                acc.5.push(Self::parse_timestamp_to_nanos(&result.clear_time));
+                acc.6.push(Self::parse_timestamp_to_nanos(&result.reset_time));
+                acc.7.push(Self::parse_string_timestamp_to_nanos(&result.modification_time));
                 
-                let ack_time_nanos = result.acknowledgment_time.as_ref()
-                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .and_then(|dt| dt.timestamp_nanos_opt());
-                acc.4.push(ack_time_nanos);
-                
-                let clear_time_nanos = result.clear_time.as_ref()
-                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .and_then(|dt| dt.timestamp_nanos_opt());
-                acc.5.push(clear_time_nanos);
-                
-                let reset_time_nanos = result.reset_time.as_ref()
-                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .and_then(|dt| dt.timestamp_nanos_opt());
-                acc.6.push(reset_time_nanos);
-                
-                let modification_time_nanos = chrono::DateTime::parse_from_rfc3339(&result.modification_time)
-                    .map(|dt| dt.timestamp_nanos_opt())
-                    .unwrap_or_default();
-                acc.7.push(modification_time_nanos);
-                
-                acc.8.push(result.state);
+                acc.8.push(Some(result.state));
                 acc.9.push(result.priority.map(|p| p as i64));
-                acc.10.push(result.event_text.map(|v| v.join(";")));
-                acc.11.push(result.info_text.map(|v| v.join(";")));
+                acc.10.push(result.event_text.map(|texts| texts.join(", ")));
+                acc.11.push(result.info_text.map(|texts| texts.join(", ")));
                 acc.12.push(result.origin);
                 acc.13.push(result.area);
                 acc.14.push(result.value.map(|v| v.to_string()));
@@ -835,18 +584,17 @@ impl QueryHandler {
             },
         );
 
-        // Create a RecordBatch
-        let batch = RecordBatch::try_new(
-            schema.clone(),
+        RecordBatch::try_new(
+            schema,
             vec![
                 Arc::new(StringArray::from(names)),
                 Arc::new(Int64Array::from(instance_ids)),
                 Arc::new(Int64Array::from(alarm_group_ids)),
                 Arc::new(TimestampNanosecondArray::from(raise_times)),
-                Arc::new(TimestampNanosecondArray::from(acknowledgment_times)),
+                Arc::new(TimestampNanosecondArray::from(ack_times)),
                 Arc::new(TimestampNanosecondArray::from(clear_times)),
                 Arc::new(TimestampNanosecondArray::from(reset_times)),
-                Arc::new(TimestampNanosecondArray::from(modification_times)),
+                Arc::new(TimestampNanosecondArray::from(mod_times)),
                 Arc::new(StringArray::from(states)),
                 Arc::new(Int64Array::from(priorities)),
                 Arc::new(StringArray::from(event_texts)),
@@ -858,16 +606,244 @@ impl QueryHandler {
                 Arc::new(StringArray::from(user_names)),
                 Arc::new(StringArray::from(durations)),
             ],
-        )?;
+        ).map_err(Into::into)
+    }
 
-        // Execute the query using DataFusion
-        let (results, datafusion_time_ms) =
-            datafusion_handler::execute_query(sql, batch, &query_info.table.to_string()).await?;
+    fn parse_timestamp_to_nanos(timestamp_opt: &Option<String>) -> Option<i64> {
+        timestamp_opt.as_ref().and_then(|ts| {
+            chrono::DateTime::parse_from_rfc3339(ts)
+                .ok()
+                .and_then(|dt| dt.timestamp_nanos_opt())
+        })
+    }
 
-        // Convert RecordBatch results directly to QueryResult
-        let mut query_result = QueryResult::from_record_batches(results)?;
-        query_result.timings.datafusion_time_ms = Some(datafusion_time_ms);
-        query_result.timings.graphql_time_ms = Some(graphql_time_ms);
+    fn parse_string_timestamp_to_nanos(timestamp: &str) -> Option<i64> {
+        chrono::DateTime::parse_from_rfc3339(timestamp)
+            .ok()
+            .and_then(|dt| dt.timestamp_nanos_opt())
+    }
+
+    fn create_information_schema_tables_record_batch(_query_info: &QueryInfo) -> Result<RecordBatch> {
+        // Create schema for information_schema.tables
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("table_catalog", DataType::Utf8, true),
+            Field::new("table_schema", DataType::Utf8, true),
+            Field::new("table_name", DataType::Utf8, false),
+            Field::new("table_type", DataType::Utf8, true),
+            Field::new("self_referencing_column_name", DataType::Utf8, true),
+            Field::new("reference_generation", DataType::Utf8, true),
+            Field::new("user_defined_type_catalog", DataType::Utf8, true),
+            Field::new("user_defined_type_schema", DataType::Utf8, true),
+            Field::new("user_defined_type_name", DataType::Utf8, true),
+            Field::new("is_insertable_into", DataType::Utf8, true),
+            Field::new("is_typed", DataType::Utf8, true),
+            Field::new("commit_action", DataType::Utf8, true),
+        ]));
+
+        let tables = vec!["tagvalues", "loggedtagvalues", "activealarms", "loggedalarms", "taglist"];
+        let table_catalogs: Vec<Option<String>> = vec![Some("winccua".to_string()); tables.len()];
+        let table_schemas: Vec<Option<String>> = vec![Some("public".to_string()); tables.len()];
+        let table_names: Vec<String> = tables.iter().map(|s| s.to_string()).collect();
+        let table_types: Vec<Option<String>> = vec![Some("VIEW".to_string()); tables.len()];
+        let nulls: Vec<Option<String>> = vec![None; tables.len()];
+        let nos: Vec<Option<String>> = vec![Some("NO".to_string()); tables.len()];
+
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(table_catalogs)),
+                Arc::new(StringArray::from(table_schemas)),
+                Arc::new(StringArray::from(table_names)),
+                Arc::new(StringArray::from(table_types)),
+                Arc::new(StringArray::from(nulls.clone())),
+                Arc::new(StringArray::from(nulls.clone())),
+                Arc::new(StringArray::from(nulls.clone())),
+                Arc::new(StringArray::from(nulls.clone())),
+                Arc::new(StringArray::from(nulls.clone())),
+                Arc::new(StringArray::from(nos.clone())),
+                Arc::new(StringArray::from(nos.clone())),
+                Arc::new(StringArray::from(nulls)),
+            ],
+        ).map_err(Into::into)
+    }
+
+    fn create_information_schema_columns_record_batch(_query_info: &QueryInfo) -> Result<RecordBatch> {
+        // Create schema for information_schema.columns
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("table_catalog", DataType::Utf8, true),
+            Field::new("table_schema", DataType::Utf8, true),
+            Field::new("table_name", DataType::Utf8, false),
+            Field::new("column_name", DataType::Utf8, false),
+            Field::new("ordinal_position", DataType::Int64, false),
+            Field::new("column_default", DataType::Utf8, true),
+            Field::new("is_nullable", DataType::Utf8, true),
+            Field::new("data_type", DataType::Utf8, true),
+            Field::new("character_maximum_length", DataType::Int64, true),
+            Field::new("character_octet_length", DataType::Int64, true),
+            Field::new("numeric_precision", DataType::Int64, true),
+            Field::new("numeric_precision_radix", DataType::Int64, true),
+            Field::new("numeric_scale", DataType::Int64, true),
+            Field::new("datetime_precision", DataType::Int64, true),
+            Field::new("interval_type", DataType::Utf8, true),
+            Field::new("interval_precision", DataType::Int64, true),
+            Field::new("character_set_catalog", DataType::Utf8, true),
+            Field::new("character_set_schema", DataType::Utf8, true),
+        ]));
+
+        // Generate columns for all tables
+        let mut all_columns = Vec::new();
+        let table_columns = vec![
+            ("tagvalues", vec!["tag_name", "timestamp", "numeric_value", "string_value", "quality"]),
+            ("loggedtagvalues", vec!["tag_name", "timestamp", "numeric_value", "string_value", "quality"]),
+            ("activealarms", vec!["name", "instance_id", "raise_time", "state", "priority"]),
+            ("loggedalarms", vec!["name", "instance_id", "raise_time", "modification_time", "state", "priority"]),
+            ("taglist", vec!["tag_name", "display_name", "object_type", "data_type"]),
+        ];
+
+        for (table_name, columns) in table_columns {
+            for (i, column_name) in columns.iter().enumerate() {
+                all_columns.push((table_name.to_string(), column_name.to_string(), i as i64 + 1));
+            }
+        }
+
+        let table_catalogs: Vec<Option<String>> = vec![Some("winccua".to_string()); all_columns.len()];
+        let table_schemas: Vec<Option<String>> = vec![Some("public".to_string()); all_columns.len()];
+        let table_names: Vec<String> = all_columns.iter().map(|(t, _, _)| t.clone()).collect();
+        let column_names: Vec<String> = all_columns.iter().map(|(_, c, _)| c.clone()).collect();
+        let ordinal_positions: Vec<i64> = all_columns.iter().map(|(_, _, p)| *p).collect();
+        let column_defaults: Vec<Option<String>> = vec![None; all_columns.len()];
+        let is_nullables: Vec<Option<String>> = vec![Some("YES".to_string()); all_columns.len()];
+        let data_types: Vec<Option<String>> = vec![Some("text".to_string()); all_columns.len()];
+        let nulls: Vec<Option<i64>> = vec![None; all_columns.len()];
+        let null_strings: Vec<Option<String>> = vec![None; all_columns.len()];
+
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(table_catalogs)),
+                Arc::new(StringArray::from(table_schemas)),
+                Arc::new(StringArray::from(table_names)),
+                Arc::new(StringArray::from(column_names)),
+                Arc::new(Int64Array::from(ordinal_positions)),
+                Arc::new(StringArray::from(column_defaults)),
+                Arc::new(StringArray::from(is_nullables)),
+                Arc::new(StringArray::from(data_types)),
+                Arc::new(Int64Array::from(nulls.clone())),
+                Arc::new(Int64Array::from(nulls.clone())),
+                Arc::new(Int64Array::from(nulls.clone())),
+                Arc::new(Int64Array::from(nulls.clone())),
+                Arc::new(Int64Array::from(nulls.clone())),
+                Arc::new(Int64Array::from(nulls)),
+                Arc::new(StringArray::from(null_strings.clone())),
+                Arc::new(Int64Array::from(vec![None; all_columns.len()])),
+                Arc::new(StringArray::from(null_strings.clone())),
+                Arc::new(StringArray::from(null_strings)),
+            ],
+        ).map_err(Into::into)
+    }
+
+    async fn create_pg_stat_activity_record_batch(session_manager: Arc<SessionManager>) -> Result<RecordBatch> {
+        // Reuse the existing pg_stat_activity logic but return RecordBatch directly
+        let connections = session_manager.get_connections().await;
+        
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("datid", DataType::Int64, false),
+            Field::new("datname", DataType::Utf8, true),
+            Field::new("pid", DataType::Int64, false),
+            Field::new("usename", DataType::Utf8, true),
+            Field::new("application_name", DataType::Utf8, true),
+            Field::new("client_addr", DataType::Utf8, false),
+            Field::new("client_hostname", DataType::Utf8, true),
+            Field::new("client_port", DataType::Int64, false),
+            Field::new("backend_start", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("query_start", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("query_stop", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("state", DataType::Utf8, true),
+            Field::new("query", DataType::Utf8, true),
+            Field::new("graphql_time", DataType::Int64, true),
+            Field::new("datafusion_time", DataType::Int64, true),
+            Field::new("overall_time", DataType::Int64, true),
+            Field::new("last_alive_sent", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+        ]));
+
+        // Convert connections to arrays (using correct field names)
+        let (datids, datnames, pids, usenames, app_names, client_addrs, client_hostnames, client_ports,
+             backend_starts, query_starts, query_stops, states, queries, 
+             graphql_times, datafusion_times, overall_times, last_alive_sents) = 
+            connections.into_iter().fold(
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+                 Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), 
+                 Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                |mut acc, conn| {
+                    acc.0.push(0i64); // datid - always 0 since we don't have multiple databases
+                    acc.1.push(conn.database_name);
+                    acc.2.push(conn.connection_id as i64); // use connection_id as pid
+                    acc.3.push(conn.username);
+                    acc.4.push(conn.application_name);
+                    acc.5.push(conn.client_addr.ip().to_string());
+                    acc.6.push(None::<String>); // client_hostname - not implemented
+                    acc.7.push(conn.client_addr.port() as i64); // client_port
+                    
+                    // Convert timestamps to nanoseconds
+                    acc.8.push(Some(conn.backend_start.timestamp_nanos_opt().unwrap_or(0)));
+                    acc.9.push(conn.query_start.map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)));
+                    acc.10.push(conn.query_stop.map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)));
+                    
+                    acc.11.push(Some(conn.state.as_str().to_string()));
+                    acc.12.push(Some(conn.last_query));
+                    acc.13.push(conn.graphql_time_ms.map(|t| t as i64));
+                    acc.14.push(conn.datafusion_time_ms.map(|t| t as i64));
+                    acc.15.push(conn.overall_time_ms.map(|t| t as i64));
+                    acc.16.push(conn.last_alive_sent.map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)));
+                    acc
+                },
+            );
+
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(datids)),
+                Arc::new(StringArray::from(datnames)),
+                Arc::new(Int64Array::from(pids)),
+                Arc::new(StringArray::from(usenames)),
+                Arc::new(StringArray::from(app_names)),
+                Arc::new(StringArray::from(client_addrs)),
+                Arc::new(StringArray::from(client_hostnames)),
+                Arc::new(Int64Array::from(client_ports)),
+                Arc::new(TimestampNanosecondArray::from(backend_starts)),
+                Arc::new(TimestampNanosecondArray::from(query_starts)),
+                Arc::new(TimestampNanosecondArray::from(query_stops)),
+                Arc::new(StringArray::from(states)),
+                Arc::new(StringArray::from(queries)),
+                Arc::new(Int64Array::from(graphql_times)),
+                Arc::new(Int64Array::from(datafusion_times)),
+                Arc::new(Int64Array::from(overall_times)),
+                Arc::new(TimestampNanosecondArray::from(last_alive_sents)),
+            ],
+        ).map_err(Into::into)
+    }
+
+    async fn execute_from_less_query_datafusion(sql: &str, session: &AuthenticatedSession) -> Result<QueryResult> {
+        debug!("🔍 Executing FROM-less query with DataFusion: {}", sql.trim());
+        
+        // For SELECT 1 queries, extend the session as a keep-alive
+        if sql.trim().to_uppercase().contains("SELECT 1") {
+            match session.client.extend_session(&session.token).await {
+                Ok(_) => debug!("✅ Session extended successfully for SELECT 1"),
+                Err(e) => warn!("⚠️ Failed to extend session: {}", e),
+            }
+        }
+        
+        // Use DataFusion to execute the FROM-less query directly
+        let ctx = datafusion::prelude::SessionContext::new();
+        let df = ctx.sql(sql).await?;
+        let batches = df.collect().await?;
+
+        // Convert to QueryResult
+        let mut query_result = QueryResult::from_record_batches(batches)?;
+        query_result.timings.datafusion_time_ms = Some(0); // No separate datafusion timing for direct queries
+        query_result.timings.graphql_time_ms = Some(0); // No GraphQL for FROM-less queries
+        
         Ok(query_result)
     }
 }

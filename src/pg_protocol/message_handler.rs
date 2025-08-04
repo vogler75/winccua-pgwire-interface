@@ -409,9 +409,9 @@ async fn handle_execute_message(
             // Log the message types in the response
             let mut pos = 0;
             while pos < response.len() && pos + 5 <= response.len() {
-                let msg_type = response[pos] as char;
+                let _msg_type = response[pos] as char;
                 let msg_len = u32::from_be_bytes([response[pos+1], response[pos+2], response[pos+3], response[pos+4]]) as usize;
-                debug!("   Message type '{}' ({} bytes)", msg_type, msg_len);
+                //debug!("   Message type '{}' ({} bytes)", msg_type, msg_len);
                 pos += 1 + msg_len;
             }
             

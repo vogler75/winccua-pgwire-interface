@@ -304,8 +304,8 @@ impl SqlHandler {
                     return Err(anyhow!("NOT BETWEEN is not supported"));
                 }
                 if let Expr::Identifier(column) = expr.as_ref() {
-                    let low_val = Self::extract_filter_value(low)?;
-                    let high_val = Self::extract_filter_value(high)?;
+                    let low_val = Self::extract_filter_value_for_column(low, &column.value, table)?;
+                    let high_val = Self::extract_filter_value_for_column(high, &column.value, table)?;
                     let filter = ColumnFilter {
                         column: column.value.clone(),
                         operator: FilterOperator::Between,
@@ -314,6 +314,30 @@ impl SqlHandler {
                     filters.push(filter);
                 } else {
                     return Err(anyhow!("Complex BETWEEN expressions are not supported"));
+                }
+            }
+            Expr::IsNull(expr) => {
+                if let Expr::Identifier(column) = expr.as_ref() {
+                    let filter = ColumnFilter {
+                        column: column.value.clone(),
+                        operator: FilterOperator::IsNull,
+                        value: FilterValue::Null,
+                    };
+                    filters.push(filter);
+                } else {
+                    return Err(anyhow!("Complex IS NULL expressions are not supported"));
+                }
+            }
+            Expr::IsNotNull(expr) => {
+                if let Expr::Identifier(column) = expr.as_ref() {
+                    let filter = ColumnFilter {
+                        column: column.value.clone(),
+                        operator: FilterOperator::IsNotNull,
+                        value: FilterValue::Null,
+                    };
+                    filters.push(filter);
+                } else {
+                    return Err(anyhow!("Complex IS NOT NULL expressions are not supported"));
                 }
             }
             _ => return Err(anyhow!("Unsupported WHERE expression")),
@@ -342,7 +366,7 @@ impl SqlHandler {
             _ => return Err(anyhow!("Unsupported operator: {:?}", op)),
         };
 
-        let value = Self::extract_filter_value_for_column(value_expr, column)?;
+        let value = Self::extract_filter_value_for_column(value_expr, column, table)?;
 
         Ok(ColumnFilter {
             column: column.to_string(),
@@ -361,28 +385,13 @@ impl SqlHandler {
         }
     }
 
-    fn extract_filter_value_for_column(expr: &Expr, column: &str) -> Result<FilterValue> {
+    fn extract_filter_value_for_column(expr: &Expr, column: &str, table: &VirtualTable) -> Result<FilterValue> {
+        let column_type = table.get_column_type(column);
+        
         match expr {
             Expr::Value(value_span) => match Self::extract_value_from_span(value_span) {
                 Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => {
-                    // For string columns, always treat as string
-                    if column == "tag_name" || column == "name" || column == "object_type" || column == "data_type" 
-                       || column == "display_name" || column == "quality" || column == "state" || column == "origin" 
-                       || column == "area" || column == "host_name" || column == "user_name" || column == "event_text" 
-                       || column == "info_text" || column == "string_value" || column == "filterString" 
-                       || column == "system_name" || column == "filter_language" {
-                        Ok(FilterValue::String(s.clone()))
-                    }
-                    // For timestamp columns, always treat as timestamp
-                    else if column == "timestamp" || column.contains("time") || column.contains("Time") {
-                        Ok(FilterValue::Timestamp(s.clone()))
-                    }
-                    // For other columns, use heuristic
-                    else if Self::is_timestamp_like(s) {
-                        Ok(FilterValue::Timestamp(s.clone()))
-                    } else {
-                        Ok(FilterValue::String(s.clone()))
-                    }
+                    Ok(FilterValue::from_string_value_for_column(s, column_type))
                 }
                 Value::Number(n, _) => {
                     if let Ok(i) = n.parse::<i64>() {
@@ -433,77 +442,12 @@ impl SqlHandler {
             }
             Expr::BinaryOp { left, op, right } => {
                 // Handle date/time arithmetic with intervals
-                Self::handle_interval_arithmetic(left, op, right, column)
+                Self::handle_interval_arithmetic(left, op, right, column, table)
             }
             _ => Err(anyhow!("Complex value expressions are not supported")),
         }
     }
 
-    fn extract_filter_value(expr: &Expr) -> Result<FilterValue> {
-        match expr {
-            Expr::Value(value_span) => match Self::extract_value_from_span(value_span) {
-                Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => {
-                    // Check if it looks like a timestamp
-                    if Self::is_timestamp_like(s) {
-                        Ok(FilterValue::Timestamp(s.clone()))
-                    } else {
-                        Ok(FilterValue::String(s.clone()))
-                    }
-                }
-                Value::Number(n, _) => {
-                    if let Ok(i) = n.parse::<i64>() {
-                        Ok(FilterValue::Integer(i))
-                    } else if let Ok(f) = n.parse::<f64>() {
-                        Ok(FilterValue::Number(f))
-                    } else {
-                        Err(anyhow!("Invalid number: {}", n))
-                    }
-                }
-                _ => Err(anyhow!("Unsupported value type: {:?}", Self::extract_value_from_span(value_span))),
-            },
-            Expr::Identifier(ident) => {
-                // Handle special date/time identifiers
-                match ident.to_string().to_uppercase().as_str() {
-                    "CURRENT_DATE" => {
-                        let today = Local::now().format("%Y-%m-%d").to_string();
-                        Ok(FilterValue::Timestamp(today))
-                    }
-                    "CURRENT_TIME" => {
-                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-                        Ok(FilterValue::Timestamp(now))
-                    }
-                    "CURRENT_TIMESTAMP" => {
-                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
-                        Ok(FilterValue::Timestamp(now))
-                    }
-                    _ => Err(anyhow!("Unknown identifier: {}", ident.to_string())),
-                }
-            }
-            Expr::Function(func) => {
-                // Handle function calls like CURRENT_DATE()
-                match func.name.to_string().to_uppercase().as_str() {
-                    "CURRENT_DATE" => {
-                        let today = Local::now().format("%Y-%m-%d").to_string();
-                        Ok(FilterValue::Timestamp(today))
-                    }
-                    "CURRENT_TIME" => {
-                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-                        Ok(FilterValue::Timestamp(now))
-                    }
-                    "CURRENT_TIMESTAMP" | "NOW" => {
-                        let now = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
-                        Ok(FilterValue::Timestamp(now))
-                    }
-                    _ => Err(anyhow!("Unsupported function: {}", func.name)),
-                }
-            }
-            Expr::BinaryOp { left, op, right } => {
-                // Handle date/time arithmetic with intervals
-                Self::handle_interval_arithmetic(left, op, right, "")
-            }
-            _ => Err(anyhow!("Complex value expressions are not supported")),
-        }
-    }
 
     fn extract_string_value(expr: &Expr) -> Result<String> {
         match expr {
@@ -536,10 +480,6 @@ impl SqlHandler {
         OrderBy { column, ascending }
     }
 
-    fn is_timestamp_like(s: &str) -> bool {
-        // Simple heuristic to detect timestamp strings
-        s.contains('T') || s.contains(':') || s.len() > 10
-    }
 
     fn validate_query(query: &QueryInfo) -> Result<()> {
         // Validate that tag-based tables have required filters
@@ -563,15 +503,11 @@ impl SqlHandler {
         Ok(())
     }
 
-    fn handle_interval_arithmetic(left: &Expr, op: &BinaryOperator, right: &Expr, column: &str) -> Result<FilterValue> {
+    fn handle_interval_arithmetic(left: &Expr, op: &BinaryOperator, right: &Expr, column: &str, table: &VirtualTable) -> Result<FilterValue> {
         // Try to extract interval from either side
         if let Ok(interval_duration) = Self::extract_interval(right) {
             // Get the base timestamp from left side
-            let base_timestamp = if column.is_empty() {
-                Self::extract_filter_value(left)?
-            } else {
-                Self::extract_filter_value_for_column(left, column)?
-            };
+            let base_timestamp = Self::extract_filter_value_for_column(left, column, table)?;
             
             if let FilterValue::Timestamp(ts_str) = base_timestamp {
                 // Parse the timestamp
@@ -592,11 +528,7 @@ impl SqlHandler {
             }
         } else if let Ok(interval_duration) = Self::extract_interval(left) {
             // Interval is on the left side
-            let base_timestamp = if column.is_empty() {
-                Self::extract_filter_value(right)?
-            } else {
-                Self::extract_filter_value_for_column(right, column)?
-            };
+            let base_timestamp = Self::extract_filter_value_for_column(right, column, table)?;
             
             if let FilterValue::Timestamp(ts_str) = base_timestamp {
                 let base_dt = Self::parse_timestamp(&ts_str)?;
@@ -776,6 +708,37 @@ impl SqlHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_null_expressions() {
+        let test_cases = [
+            "SELECT * FROM pg_stat_activity WHERE overall_time IS NULL",
+            "SELECT * FROM pg_stat_activity WHERE graphql_time IS NOT NULL", 
+            "SELECT * FROM tagvalues WHERE tag_name = 'test' AND numeric_value IS NULL",
+            "SELECT * FROM activealarms WHERE clear_time IS NOT NULL",
+        ];
+        
+        for sql in &test_cases {
+            println!("Testing IS NULL/IS NOT NULL query: {}", sql);
+            match SqlHandler::parse_query(sql) {
+                Ok(SqlResult::Query(query_info)) => {
+                    println!("✅ Successfully parsed query: {}", sql);
+                    // Verify that filters contain the correct NULL operators
+                    let has_null_filter = query_info.filters.iter().any(|f| {
+                        matches!(f.operator, FilterOperator::IsNull | FilterOperator::IsNotNull) &&
+                        matches!(f.value, FilterValue::Null)
+                    });
+                    assert!(has_null_filter, "Query should contain IS NULL or IS NOT NULL filter");
+                }
+                Ok(SqlResult::SetStatement(_)) => {
+                    panic!("Query incorrectly identified as SET statement: {}", sql);
+                }
+                Err(e) => {
+                    panic!("Failed to parse IS NULL/IS NOT NULL query '{}': {}", sql, e);
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_interval_parsing() {
@@ -1395,6 +1358,32 @@ mod tests {
             }
             SqlResult::SetStatement(_) => {
                 panic!("Query incorrectly identified as SET statement");
+            }
+        }
+    }
+
+    #[test]
+    fn test_pg_stat_activity_columns() {
+        let test_cases = [
+            "SELECT * FROM pg_stat_activity WHERE overall_time > 0",
+            "SELECT pid, datname, overall_time FROM pg_stat_activity",
+            "SELECT * FROM pg_stat_activity WHERE graphql_time IS NOT NULL",
+        ];
+
+        for sql in test_cases.iter() {
+            println!("Testing pg_stat_activity query: {}", sql);
+            match SqlHandler::parse_query(sql) {
+                Ok(SqlResult::Query(query_info)) => {
+                    assert_eq!(query_info.table, VirtualTable::PgStatActivity, 
+                              "Should parse as pg_stat_activity table");
+                    println!("✅ Successfully parsed pg_stat_activity query: {}", sql);
+                }
+                Ok(SqlResult::SetStatement(_)) => {
+                    panic!("Query incorrectly identified as SET statement: {}", sql);
+                }
+                Err(e) => {
+                    panic!("Failed to parse pg_stat_activity query '{}': {}", sql, e);
+                }
             }
         }
     }

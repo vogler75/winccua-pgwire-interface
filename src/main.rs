@@ -14,7 +14,6 @@ pub static LOG_SQL: AtomicBool = AtomicBool::new(false);
 mod auth;
 mod datafusion_handler;
 mod graphql;
-mod information_schema;
 mod keep_alive;
 mod pg_protocol;
 mod query_handler;
