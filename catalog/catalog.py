@@ -165,21 +165,29 @@ def create_catalog_tables(conn: sqlite3.Connection):
             attrelid INTEGER NOT NULL,
             attname TEXT NOT NULL,
             atttypid INTEGER NOT NULL,
-            attstattarget INTEGER,
-            attlen INTEGER,
+            attstattarget INTEGER NOT NULL,
+            attlen INTEGER NOT NULL,
             attnum INTEGER NOT NULL,
-            attndims INTEGER,
-            attcacheoff INTEGER,
-            atttypmod INTEGER,
-            attbyval BOOLEAN,
-            attstorage TEXT,
-            attalign TEXT,
-            attnotnull BOOLEAN,
-            atthasdef BOOLEAN,
-            attisdropped BOOLEAN,
-            attislocal BOOLEAN,
-            attinhcount INTEGER,
+            attndims INTEGER NOT NULL,
+            attcacheoff INTEGER NOT NULL,
+            atttypmod INTEGER NOT NULL,
+            attbyval BOOLEAN NOT NULL,
+            attalign TEXT NOT NULL,
+            attstorage TEXT NOT NULL,
+            attcompression TEXT NOT NULL,
+            attnotnull BOOLEAN NOT NULL,
+            atthasdef BOOLEAN NOT NULL,
+            atthasmissing BOOLEAN NOT NULL,
+            attidentity TEXT NOT NULL,
+            attgenerated TEXT NOT NULL,
+            attisdropped BOOLEAN NOT NULL,
+            attislocal BOOLEAN NOT NULL,
+            attinhcount INTEGER NOT NULL,
+            attcollation INTEGER NOT NULL,
             attacl TEXT,
+            attoptions TEXT,
+            attfdwoptions TEXT,
+            attmissingval TEXT,
             PRIMARY KEY (attrelid, attnum)
         )
     """)
@@ -439,11 +447,11 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     table_oid = 20000
     for table_name, table_info in WINCC_TABLES.items():
         # Insert table into pg_class
-        cursor.execute("""
-            INSERT INTO "pg_catalog.pg_class" (oid, relname, relnamespace, reltype, relkind, 
-                                relnatts, relhasindex, relisshared)
-            VALUES (?, ?, 2200, 0, 'r', ?, false, false)
-        """, (table_oid, table_name, len(table_info['columns'])))
+        #cursor.execute("""
+        #    INSERT INTO "pg_catalog.pg_class" (oid, relname, relnamespace, reltype, relkind, 
+        #                        relnatts, relhasindex, relisshared)
+        #    VALUES (?, ?, 2200, 0, 'r', ?, false, false)
+        #""", (table_oid, table_name, len(table_info['columns'])))
         
         # Insert table description
         #cursor.execute("""

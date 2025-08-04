@@ -424,6 +424,116 @@ impl ScalarUDFImpl for FormatTypeUDF {
     }
 }
 
+/// Implementation of pg_get_expr function
+#[derive(Debug)]
+struct PgGetExprUDF {
+    signature: Signature,
+}
+
+impl PgGetExprUDF {
+    fn new() -> Self {
+        Self {
+            signature: Signature::any(2, Volatility::Stable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for PgGetExprUDF {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "pg_get_expr"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
+        use arrow::array::{Array, StringArray};
+        
+        let args = args.args;
+        if args.len() != 2 {
+            return Err(datafusion::error::DataFusionError::Internal("pg_get_expr expects 2 arguments".to_string()));
+        }
+        
+        let expr_column = args[0].clone().into_array(1)?;
+        let _relation_oid = args[1].clone().into_array(1)?; // Second parameter (relation OID) - not used in simplified implementation
+        
+        let mut results = Vec::new();
+        
+        // For this implementation, we'll handle the most common case where the first argument is a string representation
+        // of an expression (like a default value) and we just return it as-is or with minimal processing
+        match expr_column.data_type() {
+            DataType::Utf8 => {
+                let expr_array = expr_column.as_any().downcast_ref::<StringArray>().unwrap();
+                for i in 0..expr_array.len() {
+                    if expr_array.is_null(i) {
+                        results.push(None);
+                    } else {
+                        let expr_str = expr_array.value(i);
+                        // In a real PostgreSQL implementation, this would parse the pg_node_tree format
+                        // and reconstruct the SQL expression. For our simplified implementation,
+                        // we'll handle some common patterns:
+                        let processed_expr = Self::process_expression(expr_str);
+                        results.push(Some(processed_expr));
+                    }
+                }
+            }
+            _ => {
+                // If the expression is not a string, try to convert it to string representation
+                for i in 0..expr_column.len() {
+                    if expr_column.is_null(i) {
+                        results.push(None);
+                    } else {
+                        // For non-string types, return a placeholder
+                        results.push(Some("(expression)".to_string()));
+                    }
+                }
+            }
+        }
+        
+        let result_array = StringArray::from(results);
+        Ok(ColumnarValue::Array(Arc::new(result_array)))
+    }
+}
+
+impl PgGetExprUDF {
+    /// Process common expression patterns that might be stored in pg_attrdef.adbin
+    fn process_expression(expr: &str) -> String {
+        // Handle some common PostgreSQL expression patterns
+        
+        // If it's already a clean expression, return as-is
+        if expr.starts_with('\'') || expr.contains("::") || expr.contains("nextval") {
+            return expr.to_string();
+        }
+        
+        // Handle numeric literals
+        if expr.parse::<i64>().is_ok() || expr.parse::<f64>().is_ok() {
+            return expr.to_string();
+        }
+        
+        // Handle boolean literals
+        if expr.eq_ignore_ascii_case("true") || expr.eq_ignore_ascii_case("false") {
+            return expr.to_lowercase();
+        }
+        
+        // Handle NULL
+        if expr.eq_ignore_ascii_case("null") {
+            return "NULL".to_string();
+        }
+        
+        // For anything else, return as-is (in real PostgreSQL this would be much more complex)
+        expr.to_string()
+    }
+}
+
 /// Implementation of nullif function
 #[derive(Debug)]
 struct NullIfUDF {
@@ -523,6 +633,7 @@ pub fn register_postgresql_functions(ctx: &SessionContext) -> Result<()> {
     ctx.register_udf(ScalarUDF::new_from_impl(VersionUDF::new()));
     ctx.register_udf(ScalarUDF::new_from_impl(CurrentDatabaseUDF::new()));
     ctx.register_udf(ScalarUDF::new_from_impl(FormatTypeUDF::new()));
+    ctx.register_udf(ScalarUDF::new_from_impl(PgGetExprUDF::new()));
     ctx.register_udf(ScalarUDF::new_from_impl(NullIfUDF::new()));
     Ok(())
 }
