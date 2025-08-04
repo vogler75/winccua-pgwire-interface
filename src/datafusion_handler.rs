@@ -644,6 +644,7 @@ fn handle_duplicate_column_names(sql: &str) -> String {
     use datafusion::sql::sqlparser::dialect::GenericDialect;
     use datafusion::sql::sqlparser::parser::Parser;
     
+    
     // First check if we need to handle wildcard expansion conflicts
     if needs_wildcard_handling(sql) {
         // Apply a regex-based transformation for wildcard cases
@@ -654,7 +655,12 @@ fn handle_duplicate_column_names(sql: &str) -> String {
     let dialect = GenericDialect {};
     let ast = match Parser::parse_sql(&dialect, sql) {
         Ok(ast) if ast.len() == 1 => ast,
-        _ => return sql.to_string(),
+        Ok(_) => {
+            return sql.to_string();
+        }
+        Err(_) => {
+            return sql.to_string();
+        }
     };
     
     let statement = &ast[0];
@@ -666,7 +672,7 @@ fn handle_duplicate_column_names(sql: &str) -> String {
                 sql.to_string()
             }
         }
-        _ => sql.to_string(),
+        _ => sql.to_string()
     }
 }
 
@@ -901,10 +907,134 @@ pub fn normalize_schema_qualified_tables_with_username(sql: &str, username: &str
     // For example: "SELECT db.oid, db.*" returns oid twice - once for explicit selection, once from wildcard
     // We preserve this behavior by NOT removing duplicates, matching PostgreSQL's semantics
     
-    // Handle duplicate column names in SELECT projections by adding aliases
-    processed_sql = handle_duplicate_column_names(&processed_sql);
+    // Fix wildcard + alias parsing issue before handling duplicates
+    let sql_before_fix = processed_sql.clone();
+    processed_sql = fix_wildcard_alias_parsing_issue(&processed_sql);
+    
+    // Only apply duplicate column handling if we didn't modify the SQL 
+    // (because our fix already handles duplicates with explicit aliases)
+    if sql_before_fix == processed_sql {
+        // Handle duplicate column names in SELECT projections by adding aliases
+        processed_sql = handle_duplicate_column_names(&processed_sql);
+    }
     
     processed_sql
+}
+
+/// Fix the parsing issue where wildcards followed by aliases cause DataFusion parser to fail
+/// Example: "SELECT t.oid, t.*, func() AS alias" becomes "SELECT t.oid AS oid_explicit, func() AS alias, t.*"
+fn fix_wildcard_alias_parsing_issue(sql: &str) -> String {
+    use regex::Regex;
+    
+    
+    // Pattern to match SELECT clauses with wildcard followed by alias
+    // This regex captures the problematic pattern: wildcard (t.*) followed by more items including aliases
+    let wildcard_alias_re = Regex::new(
+        r"(?i)(SELECT\s+)(.*?)(\s+FROM\s+)"
+    ).unwrap();
+    
+    if let Some(captures) = wildcard_alias_re.captures(sql) {
+        let select_part = captures.get(1).unwrap().as_str();
+        let column_list = captures.get(2).unwrap().as_str().trim();
+        let from_part = captures.get(3).unwrap().as_str();
+        let rest_of_query = &sql[captures.get(0).unwrap().end()..];
+        
+        // Check if we have the problematic pattern: wildcard AND an alias (could be anywhere)
+        if column_list.contains(".*") && column_list.to_lowercase().contains(" as ") {
+            // Split the column list into items, but be careful about commas inside function calls
+            let items = parse_select_items(column_list);
+            
+            let mut wildcards = Vec::new();
+            let mut other_items = Vec::new();
+            
+            // Separate wildcards from other items
+            for item in items {
+                if item.contains(".*") {
+                    wildcards.push(item);
+                } else {
+                    other_items.push(item);
+                }
+            }
+            
+            // If we have both wildcards and other items (which include aliases), reorder them
+            if !wildcards.is_empty() && !other_items.is_empty() {
+                // Reorder items and add explicit aliases to avoid duplicates
+                let mut reordered_items = Vec::new();
+                
+                // Process non-wildcard items first, adding aliases to potentially duplicated columns
+                for item in other_items.iter() {
+                    if !item.to_lowercase().contains(" as ") {
+                        // If it's a simple column like "t.oid", add an alias to avoid conflicts with wildcard
+                        if item.contains('.') {
+                            let col_name = item.split('.').last().unwrap_or("col");
+                            reordered_items.push(format!("{} AS {}_explicit", item, col_name));
+                        } else {
+                            reordered_items.push(format!("{} AS {}_explicit", item, item));
+                        }
+                    } else {
+                        // Already has an alias, keep as-is
+                        reordered_items.push(item.clone());
+                    }
+                }
+                
+                // Add wildcards at the end
+                reordered_items.extend(wildcards);
+                
+                let reordered_columns = reordered_items.join(", ");
+                let result = format!("{}{}{}{}", select_part, reordered_columns, from_part, rest_of_query);
+                return result;
+            }
+        }
+    }
+    
+    // If no problematic pattern found, return original SQL
+    sql.to_string()
+}
+
+/// Parse SELECT items more carefully, respecting parentheses and function calls
+fn parse_select_items(column_list: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut current_item = String::new();
+    let mut paren_depth = 0;
+    let mut in_quotes = false;
+    let mut quote_char = ' ';
+    
+    for ch in column_list.chars() {
+        match ch {
+            '\'' | '"' => {
+                if !in_quotes {
+                    in_quotes = true;
+                    quote_char = ch;
+                } else if ch == quote_char {
+                    in_quotes = false;
+                }
+                current_item.push(ch);
+            }
+            '(' if !in_quotes => {
+                paren_depth += 1;
+                current_item.push(ch);
+            }
+            ')' if !in_quotes => {
+                paren_depth -= 1;
+                current_item.push(ch);
+            }
+            ',' if !in_quotes && paren_depth == 0 => {
+                // This is a real separator
+                items.push(current_item.trim().to_string());
+                current_item.clear();
+            }
+            _ => {
+                current_item.push(ch);
+            }
+        }
+    }
+    
+    // Don't forget the last item
+    if !current_item.trim().is_empty() {
+        items.push(current_item.trim().to_string());
+    }
+    
+    items
 }
 
 pub async fn execute_query(
@@ -1075,4 +1205,83 @@ pub async fn execute_mixed_query(
     debug!("⚡ DataFusion mixed query execution completed in {} ms", elapsed_ms);
     
     Ok((results, elapsed_ms))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_wildcard_alias_issue_with_datafusion() {
+        // Test the specific parsing issue directly with DataFusion
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            // Create a simple test table to simulate pg_catalog.pg_type
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("oid", DataType::Int32, false),
+                Field::new("typname", DataType::Utf8, false),
+                Field::new("typbasetype", DataType::Int32, true),
+                Field::new("typtypmod", DataType::Int32, true),
+            ]));
+
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Int32Array::from(vec![16, 20, 23])),
+                    Arc::new(StringArray::from(vec!["bool", "int8", "int4"])),
+                    Arc::new(Int32Array::from(vec![Some(0), Some(0), Some(0)])),
+                    Arc::new(Int32Array::from(vec![Some(-1), Some(-1), Some(-1)])),
+                ],
+            ).unwrap();
+
+            // Test the SQL queries that were problematic
+            let test_cases = [
+                // This should work
+                ("SELECT t.oid, format_type(nullif(t.typbasetype, 0), t.typtypmod) as base_type_name FROM pg_catalog_pg_type t", true),
+                // This should work  
+                ("SELECT t.oid, t.* FROM pg_catalog_pg_type t", true),
+                // This should now work after our fix!
+                ("SELECT t.oid, t.*, format_type(nullif(t.typbasetype, 0), t.typtypmod) as base_type_name FROM pg_catalog_pg_type t", true),
+            ];
+
+            for (sql, should_succeed) in test_cases {
+                println!("\n🧪 Testing DataFusion execution: {}", sql);
+                
+                // Show the transformed SQL for debugging if needed
+                let processed_sql = normalize_schema_qualified_tables(sql);
+                if processed_sql != sql {
+                    println!("🔧 Transformed SQL: {}", processed_sql);
+                }
+
+                match execute_query(sql, batch.clone(), "pg_catalog_pg_type").await {
+                    Ok((results, elapsed)) => {
+                        if should_succeed {
+                            println!("✅ SQL executed successfully in {} ms", elapsed);
+                            println!("📊 Results: {} batches", results.len());
+                            for (i, batch) in results.iter().enumerate() {
+                                println!("  Batch {}: {} rows, {} columns", i, batch.num_rows(), batch.num_columns());
+                                println!("  Schema: {:?}", batch.schema().fields().iter().map(|f| f.name()).collect::<Vec<_>>());
+                            }
+                        } else {
+                            println!("⚠️  SQL unexpectedly succeeded when it should have failed");
+                        }
+                    }
+                    Err(e) => {
+                        if should_succeed {
+                            println!("❌ SQL execution failed unexpectedly: {}", e);
+                        } else {
+                            println!("❌ SQL execution failed as expected: {}", e);
+                            let error_msg = e.to_string();
+                            if error_msg.contains("ParserError") && error_msg.contains("Expected: end of statement, found: AS") {
+                                println!("🎯 Found the exact parser error in DataFusion execution!");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
 }

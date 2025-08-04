@@ -1600,4 +1600,67 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_wildcard_with_alias_parsing_issue() {
+        // Test the specific parsing issue: wildcard with alias fails
+        // Let's use a table that exists in our system (tagvalues) to focus on the parsing issue
+        let test_cases = [
+            // These should work individually
+            ("SELECT t.tag_name, current_timestamp as created_at FROM tagvalues t WHERE t.tag_name = 'test'", true),
+            ("SELECT t.tag_name, t.* FROM tagvalues t WHERE t.tag_name = 'test'", true),
+            // This might fail due to parsing issue with wildcard + alias combination
+            ("SELECT t.tag_name, t.*, current_timestamp as created_at FROM tagvalues t WHERE t.tag_name = 'test'", true),
+        ];
+        
+        for (sql, should_succeed) in test_cases {
+            println!("🧪 Testing SQL: {}", sql);
+            let result = SqlHandler::parse_query(sql);
+            
+            if should_succeed {
+                match result {
+                    Ok(_) => {
+                        println!("✅ SQL parsed successfully: {}", sql);
+                    }
+                    Err(e) => {
+                        println!("❌ SQL failed unexpectedly: {}: {}", sql, e);
+                        let error_msg = e.to_string();
+                        if error_msg.contains("ParserError") && error_msg.contains("Expected: end of statement, found: AS") {
+                            println!("🎯 Found the exact parser error we're looking for!");
+                            // This is the bug we need to fix
+                        } else {
+                            println!("⚠️  Different error: {}", error_msg);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Now test the original problematic queries from the issue to see if we can reproduce
+        println!("\n🔍 Testing original problematic SQL from issue:");
+        let original_failing_sql = "SELECT t.oid, t.*, format_type(nullif(t.typbasetype, 0), t.typtypmod) as base_type_name FROM pg_catalog.pg_type t";
+        println!("🧪 Testing: {}", original_failing_sql);
+        
+        // This should trigger the complex query handling since it's catalog tables
+        match SqlHandler::parse_query(original_failing_sql) {
+            Ok(result) => {
+                println!("✅ Original failing SQL now parses successfully");
+                match result {
+                    SqlResult::Query(query_info) => {
+                        println!("📊 Query info: table={:?}, columns={:?}", query_info.table, query_info.columns);
+                    }
+                    SqlResult::SetStatement(_) => {
+                        println!("⚠️  Incorrectly identified as SET statement");
+                    }
+                }
+            }
+            Err(e) => {
+                println!("❌ Original failing SQL still fails: {}", e);
+                let error_msg = e.to_string();
+                if error_msg.contains("ParserError") && error_msg.contains("Expected: end of statement, found: AS") {
+                    println!("🎯 Reproduced the exact parser error from the issue!");
+                }
+            }
+        }
+    }
 }
