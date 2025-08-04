@@ -197,24 +197,6 @@ fn arrow_type_to_postgres_oid(data_type: &DataType) -> u32 {
 }
 
 // Convert a RecordBatch to rows of QueryValues
-fn convert_record_batch_to_rows(batch: &RecordBatch) -> Result<Vec<Vec<QueryValue>>> {
-    let mut rows = Vec::new();
-    let num_rows = batch.num_rows();
-    
-    for row_idx in 0..num_rows {
-        let mut row = Vec::new();
-        
-        for col_idx in 0..batch.num_columns() {
-            let array = batch.column(col_idx);
-            let value = extract_value_from_array(array, row_idx)?;
-            row.push(value);
-        }
-        
-        rows.push(row);
-    }
-    
-    Ok(rows)
-}
 
 // Extract a value from an Arrow array at a specific index
 fn extract_value_from_array(array: &dyn arrow::array::Array, index: usize) -> Result<QueryValue> {
@@ -247,49 +229,6 @@ fn extract_value_from_array(array: &dyn arrow::array::Array, index: usize) -> Re
 pub struct QueryHandler;
 
 impl QueryHandler {
-
-    async fn execute_complex_query_with_datafusion(sql: &str, session: &AuthenticatedSession) -> Result<QueryResult> {
-        debug!("📊 Executing complex query with DataFusion: {}", sql);
-        
-        // Use DataFusion with catalog tables and virtual tables
-        let datafusion_start = std::time::Instant::now();
-        let (results, _timing) = datafusion_handler::execute_query_with_virtual_tables(sql, session).await?;
-        let datafusion_time_ms = datafusion_start.elapsed().as_millis() as u64;
-        
-        // Convert RecordBatch results to QueryResult
-        let mut all_rows = Vec::new();
-        let mut column_names = Vec::new();
-        let mut column_types = Vec::new();
-        
-        if !results.is_empty() {
-            let first_batch = &results[0];
-            let schema = first_batch.schema();
-            
-            // Extract column names and types
-            for field in schema.fields() {
-                column_names.push(field.name().clone());
-                let pg_type = arrow_type_to_postgres_oid(field.data_type());
-                column_types.push(pg_type);
-            }
-            
-            // Convert all batches to rows
-            for batch in &results {
-                let batch_rows = convert_record_batch_to_rows(batch)?;
-                all_rows.extend(batch_rows);
-            }
-        }
-        
-        Ok(QueryResult {
-            columns: column_names,
-            column_types,
-            rows: all_rows,
-            timings: QueryTimings {
-                graphql_time_ms: None,
-                datafusion_time_ms: Some(datafusion_time_ms),
-                overall_time_ms: Some(datafusion_time_ms),
-            },
-        })
-    }
     #[allow(dead_code)]
     pub async fn execute_query(sql: &str, session: &AuthenticatedSession, session_manager: Arc<SessionManager>) -> Result<QueryResult> {
         Self::execute_query_with_connection(sql, session, session_manager, None).await

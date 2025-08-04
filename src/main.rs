@@ -4,7 +4,7 @@ use pgwire::api::Type as PgType;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::{info, warn};
+use tracing::{info, warn, debug};
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::registry::LookupSpan;
@@ -145,6 +145,8 @@ pub struct Args {
     pub quiet_connections: bool,
 
     /// Path to catalog SQLite database file (optional)
+    /// - If not specified, looks for 'catalog.db' in current directory
+    /// - Use 'none' to explicitly disable catalog database
     #[arg(long)]
     pub catalog_db: Option<String>,
 }
@@ -202,10 +204,31 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Initialize catalog database if provided
-    if let Some(catalog_path) = &args.catalog_db {
+    // Initialize catalog database
+    // Priority: 1) --catalog-db none (explicitly disabled)
+    //          2) --catalog-db <path> (explicit path)
+    //          3) ./catalog.db (default if exists)
+    //          4) No catalog (if default doesn't exist)
+    let catalog_path = if let Some(catalog_arg) = &args.catalog_db {
+        if catalog_arg.to_lowercase() == "none" {
+            None
+        } else {
+            Some(catalog_arg.clone())
+        }
+    } else {
+        // Check for default catalog.db file
+        let default_path = "catalog.db";
+        if std::path::Path::new(default_path).exists() {
+            info!("📚 Found default catalog database: {}", default_path);
+            Some(default_path.to_string())
+        } else {
+            None
+        }
+    };
+
+    if let Some(catalog_path) = catalog_path {
         info!("📚 Initializing catalog database from: {}", catalog_path);
-        match catalog::init_catalog(catalog_path) {
+        match catalog::init_catalog(&catalog_path) {
             Ok(()) => {
                 let catalog = catalog::get_catalog().unwrap();
                 info!("✅ Catalog database initialized successfully with {} tables", 
@@ -234,7 +257,7 @@ async fn main() -> Result<()> {
                         
                         // Print column information
                         for (col_name, pg_type) in &table.pg_schema {
-                            info!("   └─ {} ({})", col_name, format_pg_type(pg_type));
+                            debug!("   └─ {} ({})", col_name, format_pg_type(pg_type));
                         }
                     } else {
                         info!("📋 Catalog table: {} (schema unavailable)", table_name);
@@ -247,7 +270,11 @@ async fn main() -> Result<()> {
             }
         }
     } else {
-        info!("📚 No catalog database specified (use --catalog-db to enable)");
+        if args.catalog_db.as_ref().map(|s| s.to_lowercase()) == Some("none".to_string()) {
+            info!("📚 Catalog database explicitly disabled (--catalog-db none)");
+        } else {
+            info!("📚 No catalog database found (use --catalog-db <path> or place catalog.db in current directory)");
+        }
     }
 
     // Setup TLS configuration if enabled

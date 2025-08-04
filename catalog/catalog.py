@@ -254,38 +254,7 @@ def create_catalog_tables(conn: sqlite3.Connection):
             proacl TEXT
         )
     """)
-    
-    # Create pg_constraint (constraints)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_constraint" (
-            oid INTEGER PRIMARY KEY,
-            conname TEXT NOT NULL,
-            connamespace INTEGER,
-            contype TEXT,
-            condeferrable BOOLEAN,
-            condeferred BOOLEAN,
-            convalidated BOOLEAN,
-            conrelid INTEGER,
-            contypid INTEGER,
-            conindid INTEGER,
-            confrelid INTEGER,
-            confupdtype TEXT,
-            confdeltype TEXT,
-            confmatchtype TEXT,
-            conislocal BOOLEAN,
-            coninhcount INTEGER,
-            connoinherit BOOLEAN,
-            conkey TEXT,
-            confkey TEXT,
-            conpfeqop TEXT,
-            conppeqop TEXT,
-            conffeqop TEXT,
-            conexclop TEXT,
-            conbin TEXT,
-            consrc TEXT
-        )
-    """)
-    
+        
     # Create pg_description (comments on database objects)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS "pg_catalog.pg_description" (
@@ -326,36 +295,37 @@ def create_catalog_tables(conn: sqlite3.Connection):
         )
     """)
     
-    # Create pg_settings table for configuration parameters
+    # Create pg_roles (database roles/users)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_settings" (
-            name TEXT PRIMARY KEY,
-            setting TEXT,
-            unit TEXT,
-            category TEXT,
-            short_desc TEXT,
-            extra_desc TEXT,
-            context TEXT,
-            vartype TEXT,
-            source TEXT,
-            min_val TEXT,
-            max_val TEXT,
-            enumvals TEXT[],
-            boot_val TEXT,
-            reset_val TEXT,
-            sourcefile TEXT,
-            sourceline INTEGER,
-            pending_restart BOOLEAN
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_roles" (
+            rolname TEXT NOT NULL,
+            rolsuper BOOLEAN,
+            rolinherit BOOLEAN,
+            rolcreaterole BOOLEAN,
+            rolcreatedb BOOLEAN,
+            rolcanlogin BOOLEAN,
+            rolreplication BOOLEAN,
+            rolconnlimit INTEGER,
+            rolpassword TEXT,
+            rolvaliduntil TIMESTAMP,
+            rolbypassrls BOOLEAN,
+            rolconfig TEXT,
+            oid INTEGER PRIMARY KEY
         )
     """)
-    
+        
     conn.commit()
 
 def populate_catalog_tables(conn: sqlite3.Connection):
     """Populate catalog tables with WinCC schema information."""
     cursor = conn.cursor()
     
-    # Insert public schema
+    # Insert pg_namespace (schemas)
+    cursor.execute("""
+        INSERT INTO "pg_catalog.pg_namespace" (oid, nspname, nspowner, nspacl)
+        VALUES (11, 'pg_catalog', 11, NULL)
+    """)
+
     cursor.execute("""
         INSERT INTO "pg_catalog.pg_namespace" (oid, nspname, nspowner, nspacl)
         VALUES (2200, 'public', 10, NULL)
@@ -383,26 +353,26 @@ def populate_catalog_tables(conn: sqlite3.Connection):
         """, (table_oid, table_name, len(table_info['columns'])))
         
         # Insert table description
-        cursor.execute("""
-            INSERT INTO "pg_catalog.pg_description" (objoid, classoid, objsubid, description)
-            VALUES (?, 1259, 0, ?)
-        """, (table_oid, table_info['description']))
+        #cursor.execute("""
+        #    INSERT INTO "pg_catalog.pg_description" (objoid, classoid, objsubid, description)
+        #    VALUES (?, 1259, 0, ?)
+        #""", (table_oid, table_info['description']))
         
         # Insert columns
-        for attnum, (col_name, col_type, col_desc) in enumerate(table_info['columns'], 1):
-            type_oid, _, type_len, _ = PG_TYPE_MAPPINGS[col_type]
-            
-            cursor.execute("""
-                INSERT INTO "pg_catalog.pg_attribute" (attrelid, attname, atttypid, attlen, 
-                                        attnum, attnotnull, attisdropped)
-                VALUES (?, ?, ?, ?, ?, false, false)
-            """, (table_oid, col_name, type_oid, type_len, attnum))
-            
-            # Insert column description
-            cursor.execute("""
-                INSERT INTO "pg_catalog.pg_description" (objoid, classoid, objsubid, description)
-                VALUES (?, 1259, ?, ?)
-            """, (table_oid, attnum, col_desc))
+        #for attnum, (col_name, col_type, col_desc) in enumerate(table_info['columns'], 1):
+        #    type_oid, _, type_len, _ = PG_TYPE_MAPPINGS[col_type]
+        #    
+        #    cursor.execute("""
+        #        INSERT INTO "pg_catalog.pg_attribute" (attrelid, attname, atttypid, attlen, 
+        #                                attnum, attnotnull, attisdropped)
+        #        VALUES (?, ?, ?, ?, ?, false, false)
+        #    """, (table_oid, col_name, type_oid, type_len, attnum))
+        #    
+        #    # Insert column description
+        #    cursor.execute("""
+        #        INSERT INTO "pg_catalog.pg_description" (objoid, classoid, objsubid, description)
+        #        VALUES (?, 1259, ?, ?)
+        #    """, (table_oid, attnum, col_desc))
         
         table_oid += 1
     
@@ -415,44 +385,13 @@ def populate_catalog_tables(conn: sqlite3.Connection):
         ) VALUES 
             (13769, 'postgres', 10, 6, 'en_US.UTF-8', 'en_US.UTF-8', false, 
              true, -1, 0, 0, 0, 0)
-    """)
-    
-    # Insert enum values for alarm_state_enum
-    cursor.execute("""
-        INSERT INTO "pg_catalog.pg_enum" (oid, enumtypid, enumsortorder, enumlabel)
-        VALUES 
-            (16510, 16500, 1.0, 'active'),
-            (16511, 16500, 2.0, 'acknowledged'),
-            (16512, 16500, 3.0, 'cleared'),
-            (16513, 16500, 4.0, 'reset')
-    """)
-    
-    # Insert enum values for tag_quality_enum
-    cursor.execute("""
-        INSERT INTO "pg_catalog.pg_enum" (oid, enumtypid, enumsortorder, enumlabel)
-        VALUES 
-            (16520, 16501, 1.0, 'good'),
-            (16521, 16501, 2.0, 'bad'),
-            (16522, 16501, 3.0, 'uncertain'),
-            (16523, 16501, 4.0, 'not_connected')
-    """)
-    
-    # Insert some basic pg_settings entries for JDBC compatibility
-    cursor.execute("""
-        INSERT INTO "pg_catalog.pg_settings" (name, setting, unit, category, short_desc, vartype, context, source, boot_val, reset_val)
-        VALUES 
-            ('server_version', '14.0', NULL, 'Preset Options', 'Shows the server version.', 'string', 'internal', 'default', '14.0', '14.0'),
-            ('server_encoding', 'UTF8', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the server (database) character set encoding.', 'string', 'internal', 'default', 'UTF8', 'UTF8'),
-            ('client_encoding', 'UTF8', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the client''s character set encoding.', 'string', 'user', 'default', 'UTF8', 'UTF8'),
-            ('DateStyle', 'ISO, MDY', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the display format for date and time values.', 'string', 'user', 'default', 'ISO, MDY', 'ISO, MDY'),
-            ('TimeZone', 'UTC', NULL, 'Client Connection Defaults / Locale and Formatting', 'Sets the time zone for displaying and interpreting time stamps.', 'string', 'user', 'default', 'UTC', 'UTC')
-    """)
+    """)        
     
     conn.commit()
 
 def main():
     """Main function to create and populate the database."""
-    db_file = 'wincc_pg_catalog.db'
+    db_file = '../catalog.db'
     
     # Create connection
     conn = sqlite3.connect(db_file)
