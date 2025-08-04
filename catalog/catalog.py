@@ -226,30 +226,32 @@ def create_catalog_tables(conn: sqlite3.Connection):
         CREATE TABLE IF NOT EXISTS "pg_catalog.pg_proc" (
             oid INTEGER PRIMARY KEY,
             proname TEXT NOT NULL,
-            pronamespace INTEGER,
-            proowner INTEGER,
-            prolang INTEGER,
-            procost REAL,
-            prorows REAL,
-            provariadic INTEGER,
-            protransform TEXT,
-            proisagg BOOLEAN,
-            proiswindow BOOLEAN,
-            prosecdef BOOLEAN,
-            proleakproof BOOLEAN,
-            proisstrict BOOLEAN,
-            proretset BOOLEAN,
-            provolatile TEXT,
-            pronargs INTEGER,
-            pronargdefaults INTEGER,
-            prorettype INTEGER,
-            proargtypes TEXT,
+            pronamespace INTEGER NOT NULL,
+            proowner INTEGER NOT NULL,
+            prolang INTEGER NOT NULL,
+            procost REAL NOT NULL,
+            prorows REAL NOT NULL,
+            provariadic INTEGER NOT NULL,
+            prosupport INTEGER NOT NULL,
+            prokind TEXT NOT NULL,
+            prosecdef BOOLEAN NOT NULL,
+            proleakproof BOOLEAN NOT NULL,
+            proisstrict BOOLEAN NOT NULL,
+            proretset BOOLEAN NOT NULL,
+            provolatile TEXT NOT NULL,
+            proparallel TEXT NOT NULL,
+            pronargs INTEGER NOT NULL,
+            pronargdefaults INTEGER NOT NULL,
+            prorettype INTEGER NOT NULL,
+            proargtypes TEXT NOT NULL,
             proallargtypes TEXT,
             proargmodes TEXT,
             proargnames TEXT,
             proargdefaults TEXT,
-            prosrc TEXT,
+            protrftypes TEXT,
+            prosrc TEXT NOT NULL,
             probin TEXT,
+            prosqlbody TEXT,
             proconfig TEXT,
             proacl TEXT
         )
@@ -343,6 +345,23 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     """Populate catalog tables with WinCC schema information."""
     cursor = conn.cursor()
     
+    # Clear all existing data from catalog tables
+    tables_to_clear = [
+        "pg_catalog.pg_namespace",
+        "pg_catalog.pg_class", 
+        "pg_catalog.pg_attribute",
+        "pg_catalog.pg_type",
+        "pg_catalog.pg_proc",
+        "pg_catalog.pg_description",
+        "pg_catalog.pg_database",
+        "pg_catalog.pg_settings",
+        "pg_catalog.pg_enum",
+        "pg_catalog.pg_roles"
+    ]
+    
+    for table in tables_to_clear:
+        cursor.execute(f'DELETE FROM "{table}"')
+    
     # Insert pg_namespace (schemas)
     cursor.execute("""
         INSERT INTO "pg_catalog.pg_namespace" (oid, nspname, nspowner, nspacl)
@@ -366,24 +385,43 @@ def populate_catalog_tables(conn: sqlite3.Connection):
         """, (oid, name, size, size > 0 and size <= 8, align))
     
     # pg_settings data
-    cursor.execute("""
+    # Insert pg_settings data
+    settings_data = [
+        ("transaction_isolation", "read committed", "", "Client Connection Defaults / Statement Behavior",
+         "Sets the current transaction's isolation level.", "", "user", "text", "override", "", "", 
+         '{"serializable","repeatable read","read committed","read uncommitted"}', "read committed", 
+         "read committed", "", None, False),
+        ("application_name", "WinCC PGWire Protocol Server", "", "Preset Options",
+         "Application name for the connection.", "", "user", "text", "default", "", "", "NULL", 
+         "WinCC PGWire Protocol Server", "WinCC PGWire Protocol Server", "", None, False),
+        ("client_encoding", "UTF8", "", "Preset Options",
+         "Sets the client-side encoding.", "", "user", "text", "default", "", "", "NULL", "UTF8", 
+         "UTF8", "", None, False),
+        ("datestyle", "ISO, MDY", "", "Preset Options",
+         "Sets the display format for date and time values.", "", "user", "text", "default", "", "", 
+         '{"ISO, MDY","ISO, DMY"}', "ISO, MDY", "ISO, MDY", "", None, False),
+        ("extra_float_digits", "0", "", "Preset Options",
+         "Sets the number of digits displayed for floating-point values.", "", "user", "integer", 
+         "default", "-3", "3", "NULL", "0", "0", "", None, False),
+        ("max_identifier_length", "63", "", "Preset Options",
+         "Shows the maximum identifier length.", "", "internal", "integer", "default", "63", "63", 
+         "NULL", "63", "63", "", None, False),
+        ("server_version", "15.0", "", "Preset Options",
+         "Shows the server version.", "", "internal", "text", "default", "", "", "NULL", "15.0", 
+         "15.0", "", None, False),
+        ("server_version_num", "150000", "", "Preset Options",
+         "Shows the server version number.", "", "internal", "integer", "default", "150000", 
+         "150000", "NULL", "150000", "150000", "", None, False),
+        ("timezone", "UTC", "", "Preset Options",
+         "Sets the time zone for displaying and interpreting time stamps.", "", "user", "text", 
+         "default", "", "", '{"UTC"}', "UTC", "UTC", "", None, False),
+    ]
+    cursor.executemany("""
         INSERT INTO "pg_catalog.pg_settings" (
-            name, setting, unit, category, short_desc, extra_desc, context, 
-            vartype, source, min_val, max_val, enumvals, boot_val, reset_val, 
-            sourcefile, sourceline, pending_restart
-        ) VALUES 
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        'max_identifier_length', '63', '', 'Preset Options', 
-        'Shows the maximum identifier length.', '', 'internal', 'integer', 
-        'default', '63', '63', 'NULL', '63', '63', '', None, False,
-        
-        'transaction_isolation', 'read committed', '', 'Client Connection Defaults / Statement Behavior',
-        'Sets the current transaction''s isolation level.', '', 'user', 'text',
-        'override', '', '', '{"serializable","repeatable read","read committed","read uncommitted"}',
-        'read committed', 'read committed', '', None, False
-    ))
+            name, setting, unit, category, short_desc, extra_desc, context, vartype, source,
+            min_val, max_val, enumvals, boot_val, reset_val, sourcefile, sourceline, pending_restart
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, settings_data)
 
     # Insert tables and columns
     table_oid = 20000

@@ -928,22 +928,51 @@ impl QueryHandler {
 
         // Parse the SHOW statement to extract variable name
         if let Some(var_name) = Self::parse_show_statement(sql)? {
-            // Get the session variable value
-            if let Some(var_value) = session_manager.get_session_variable(&session.session_id, &var_name).await {
-                // Determine if the value is numeric and create appropriate result
-                if let Ok(int_value) = var_value.parse::<i64>() {
-                    // Numeric value - use INTEGER type (OID 23)
-                    let mut result = QueryResult::new(vec![var_name.clone()], vec![23]); // INTEGER type
-                    result.add_row(vec![QueryValue::Integer(int_value)]);
-                    Ok(result)
-                } else {
-                    // Text value - use TEXT type (OID 25)
-                    let mut result = QueryResult::new(vec![var_name.clone()], vec![25]); // TEXT type
-                    result.add_row(vec![QueryValue::Text(var_value)]);
-                    Ok(result)
+            // First check session-specific variables (SET by user)
+            if let Some(session_value) = session_manager.get_session_variable(&session.session_id, &var_name).await {
+                // Use session-specific value with TEXT type (since we don't store the original type)
+                let mut result = QueryResult::new(vec![var_name.clone()], vec![25]); // TEXT type
+                result.add_row(vec![QueryValue::Text(session_value)]);
+                return Ok(result);
+            }
+            
+            // If not found in session, check global settings cache
+            if let Some(global_setting) = crate::get_postgresql_setting(&var_name) {
+                // Use the vartype to determine the correct data type and OID
+                match global_setting.vartype.as_str() {
+                    "integer" => {
+                        if let Ok(int_value) = global_setting.setting.parse::<i64>() {
+                            let mut result = QueryResult::new(vec![var_name.clone()], vec![23]); // INTEGER type (OID 23)
+                            result.add_row(vec![QueryValue::Integer(int_value)]);
+                            Ok(result)
+                        } else {
+                            // Fallback to text if parsing fails
+                            let mut result = QueryResult::new(vec![var_name.clone()], vec![25]); // TEXT type
+                            result.add_row(vec![QueryValue::Text(global_setting.setting)]);
+                            Ok(result)
+                        }
+                    }
+                    "real" | "float" => {
+                        if let Ok(float_value) = global_setting.setting.parse::<f64>() {
+                            let mut result = QueryResult::new(vec![var_name.clone()], vec![701]); // FLOAT8 type (OID 701)
+                            result.add_row(vec![QueryValue::Float(float_value)]);
+                            Ok(result)
+                        } else {
+                            // Fallback to text if parsing fails
+                            let mut result = QueryResult::new(vec![var_name.clone()], vec![25]); // TEXT type
+                            result.add_row(vec![QueryValue::Text(global_setting.setting)]);
+                            Ok(result)
+                        }
+                    }
+                    _ => {
+                        // Default to text type for "string", "enum", "bool", or unknown types
+                        let mut result = QueryResult::new(vec![var_name.clone()], vec![25]); // TEXT type (OID 25)
+                        result.add_row(vec![QueryValue::Text(global_setting.setting)]);
+                        Ok(result)
+                    }
                 }
             } else {
-                // Variable not found, return NULL with TEXT type
+                // Variable not found in either session or global settings
                 let mut result = QueryResult::new(vec![var_name], vec![25]); // TEXT type
                 result.add_row(vec![QueryValue::Null]);
                 Ok(result)

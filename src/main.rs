@@ -1,9 +1,12 @@
 use anyhow::Result;
+use arrow::array::Array;
 use clap::Parser;
 use pgwire::api::Type as PgType;
+use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use tracing::{info, warn, debug};
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
@@ -11,6 +14,127 @@ use tracing_subscriber::registry::LookupSpan;
 
 // Global flag for SQL logging
 pub static LOG_SQL: AtomicBool = AtomicBool::new(false);
+
+// Global settings cache
+#[derive(Debug, Clone)]
+pub struct PostgreSQLSetting {
+    pub name: String,
+    pub setting: String,
+    pub vartype: String,
+}
+
+// Global settings cache
+static GLOBAL_SETTINGS: once_cell::sync::Lazy<Arc<RwLock<HashMap<String, PostgreSQLSetting>>>> = 
+    once_cell::sync::Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+
+/// Initialize global settings cache from pg_catalog.pg_settings table
+async fn load_global_settings() -> Result<()> {
+    if let Some(catalog) = catalog::get_catalog() {
+        if let Some(settings_table) = catalog.get_table("pg_catalog.pg_settings").or_else(|| catalog.get_table("pg_settings")) {
+            info!("📋 Loading PostgreSQL settings from catalog database");
+            
+            // Create a DataFusion context to query the settings
+            let ctx = datafusion::prelude::SessionContext::new();
+            
+            // Register the settings table
+            if !settings_table.data.is_empty() {
+                let combined_batch = if settings_table.data.len() == 1 {
+                    settings_table.data[0].clone()
+                } else {
+                    // Combine multiple batches if needed
+                    let schema = settings_table.data[0].schema();
+                    let mut columns = Vec::new();
+                    
+                    for col_idx in 0..schema.fields().len() {
+                        let mut arrays = Vec::new();
+                        for batch in &settings_table.data {
+                            arrays.push(batch.column(col_idx).clone());
+                        }
+                        let combined_array = arrow::compute::concat(&arrays.iter().map(|a| a.as_ref()).collect::<Vec<_>>())?;
+                        columns.push(combined_array);
+                    }
+                    
+                    arrow::record_batch::RecordBatch::try_new(schema, columns)?
+                };
+                
+                ctx.register_batch("pg_settings", combined_batch)?;
+                
+                // Query name, setting, and vartype columns
+                let df = ctx.sql("SELECT name, setting, vartype FROM pg_settings").await?;
+                let results = df.collect().await?;
+                
+                let mut settings_cache = GLOBAL_SETTINGS.write().unwrap();
+                settings_cache.clear();
+                
+                // Process each batch
+                for batch in results {
+                    let num_rows = batch.num_rows();
+                    let name_array = batch.column(0).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+                    let setting_array = batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+                    let vartype_array = batch.column(2).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+                    
+                    for row_idx in 0..num_rows {
+                        if !name_array.is_null(row_idx) && !setting_array.is_null(row_idx) && !vartype_array.is_null(row_idx) {
+                            let name = name_array.value(row_idx).to_string();
+                            let setting = setting_array.value(row_idx).to_string();
+                            let vartype = vartype_array.value(row_idx).to_string();
+                            
+                            settings_cache.insert(name.clone().to_lowercase(), PostgreSQLSetting {
+                                name: name.clone(),
+                                setting,
+                                vartype,
+                            });
+                        }
+                    }
+                }
+                
+                let count = settings_cache.len();
+                info!("✅ Loaded {} PostgreSQL settings from pg_catalog.pg_settings", count);
+                return Ok(());
+            }
+        }
+    }
+    
+    // Fallback: Load default settings if catalog is not available
+    warn!("📋 Catalog database not available, using default PostgreSQL settings");
+    load_default_settings();
+    Ok(())
+}
+
+/// Load default PostgreSQL settings as fallback
+fn load_default_settings() {
+    let mut settings_cache = GLOBAL_SETTINGS.write().unwrap();
+    settings_cache.clear();
+    
+    // Add essential PostgreSQL settings with their types
+    let default_settings = vec![
+        ("transaction_isolation", "read committed", "text"),
+        ("application_name", "WinCC PGWire Protocol Server", "text"),
+        ("client_encoding", "UTF8", "text"),
+        ("datestyle", "ISO, MDY", "text"),
+        ("extra_float_digits", "0", "integer"),
+        ("max_identifier_length", "63", "integer"),
+        ("server_version", "15.0", "text"),
+        ("server_version_num", "150000", "integer"),
+        ("timezone", "UTC", "text"),
+    ];
+    
+    for (name, setting, vartype) in default_settings {
+        settings_cache.insert(name.to_lowercase().to_string(), PostgreSQLSetting {
+            name: name.to_string(),
+            setting: setting.to_string(),
+            vartype: vartype.to_string(),
+        });
+    }
+    
+    info!("✅ Loaded {} default PostgreSQL settings", settings_cache.len());
+}
+
+/// Get a PostgreSQL setting by name
+pub fn get_postgresql_setting(name: &str) -> Option<PostgreSQLSetting> {
+    let settings_cache = GLOBAL_SETTINGS.read().unwrap();
+    settings_cache.get(&name.to_lowercase()).cloned()
+}
 
 /// Format PostgreSQL type for display
 fn format_pg_type(pg_type: &PgType) -> &'static str {
@@ -264,6 +388,9 @@ async fn main() -> Result<()> {
             info!("📚 No catalog database found (use --catalog-db <path> or place catalog.db in current directory)");
         }
     }
+
+    // Load PostgreSQL settings from catalog or defaults
+    load_global_settings().await?;
 
     // Setup TLS configuration if enabled
     let tls_config = if args.tls_enabled {

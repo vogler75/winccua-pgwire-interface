@@ -68,15 +68,8 @@ pub struct AuthenticatedSession {
 
 impl AuthenticatedSession {
     pub fn new(username: String, session: Session, client: Arc<GraphQLClient>) -> Self {
-        let mut session_variables = HashMap::new();
-        
-        // Pre-populate default PostgreSQL session variables
-        session_variables.insert("transaction_isolation".to_string(), "read committed".to_string());
-        session_variables.insert("application_name".to_string(), "".to_string());
-        session_variables.insert("client_encoding".to_string(), "UTF8".to_string());
-        session_variables.insert("datestyle".to_string(), "ISO, MDY".to_string());
-        session_variables.insert("extra_float_digits".to_string(), "0".to_string());
-        session_variables.insert("max_identifier_length".to_string(), "63".to_string());
+        // Session variables start empty - they will be populated from global settings cache when requested
+        let session_variables = HashMap::new();
         
         Self {
             session_id: Uuid::new_v4().to_string(),
