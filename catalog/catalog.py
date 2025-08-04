@@ -445,7 +445,7 @@ def populate_catalog_tables(conn: sqlite3.Connection):
     # Insert pg_namespace (schemas)
     cursor.execute("""
         INSERT INTO "pg_catalog.pg_namespace" (oid, nspname, nspowner, nspacl)
-        VALUES (11, 'pg_catalog', 11, NULL)
+        VALUES (1, 'pg_catalog', 1, NULL)
     """)
 
     cursor.execute("""
@@ -555,7 +555,7 @@ def populate_catalog_tables(conn: sqlite3.Connection):
             datallowconn, datconnlimit, datlastsysoid, datfrozenxid, datminmxid, 
             dattablespace 
         ) VALUES 
-            (13769, 'postgres', 10, 6, 'en_US.UTF-8', 'en_US.UTF-8', false, 
+            (13769, 'wincc', 10, 6, 'en_US.UTF-8', 'en_US.UTF-8', false, 
              true, -1, 1, -1, 0, 3)
     """)        
     
