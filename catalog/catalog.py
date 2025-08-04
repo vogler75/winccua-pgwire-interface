@@ -339,6 +339,16 @@ def create_catalog_tables(conn: sqlite3.Connection):
             oid INTEGER PRIMARY KEY
         )
     """)
+    
+    # Create pg_attrdef (column defaults)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS "pg_catalog.pg_attrdef" (
+            oid INTEGER PRIMARY KEY,
+            adrelid INTEGER NOT NULL,
+            adnum INTEGER NOT NULL,
+            adbin TEXT NOT NULL
+        )
+    """)
         
     conn.commit()
 
@@ -357,7 +367,8 @@ def populate_catalog_tables(conn: sqlite3.Connection):
         "pg_catalog.pg_database",
         "pg_catalog.pg_settings",
         "pg_catalog.pg_enum",
-        "pg_catalog.pg_roles"
+        "pg_catalog.pg_roles",
+        "pg_catalog.pg_attrdef"
     ]
     
     for table in tables_to_clear:

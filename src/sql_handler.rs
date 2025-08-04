@@ -224,21 +224,43 @@ impl SqlHandler {
     /// Check if a SELECT statement involves catalog tables (pg_catalog.*)
     fn involves_catalog_tables(select: &Select) -> bool {
         for from_item in &select.from {
-            match &from_item.relation {
-                datafusion::sql::sqlparser::ast::TableFactor::Table { name, .. } => {
-                    let table_name = name.0.iter()
-                        .map(|part| part.to_string())
-                        .collect::<Vec<_>>()
-                        .join(".");
-                    
-                    if table_name.starts_with("pg_catalog.") || table_name.starts_with("\"pg_catalog\".") {
-                        return true;
-                    }
+            // Check the main table relation
+            if Self::is_catalog_table_factor(&from_item.relation) {
+                return true;
+            }
+            
+            // Check all joined tables
+            for join in &from_item.joins {
+                if Self::is_catalog_table_factor(&join.relation) {
+                    return true;
                 }
-                _ => {}
             }
         }
         false
+    }
+    
+    /// Check if a table factor references a catalog table
+    fn is_catalog_table_factor(table_factor: &datafusion::sql::sqlparser::ast::TableFactor) -> bool {
+        match table_factor {
+            datafusion::sql::sqlparser::ast::TableFactor::Table { name, .. } => {
+                let table_name = name.0.iter()
+                    .map(|part| part.to_string())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                
+                table_name.starts_with("pg_catalog.") || table_name.starts_with("\"pg_catalog\".")
+            }
+            datafusion::sql::sqlparser::ast::TableFactor::Derived { .. } => {
+                // Subqueries might contain catalog tables, but we'll be conservative and assume yes
+                true
+            }
+            datafusion::sql::sqlparser::ast::TableFactor::NestedJoin { table_with_joins, .. } => {
+                // Recursively check nested joins
+                Self::is_catalog_table_factor(&table_with_joins.relation) ||
+                table_with_joins.joins.iter().any(|j| Self::is_catalog_table_factor(&j.relation))
+            }
+            _ => false,
+        }
     }
     
     /// Handle complex queries involving catalog tables
