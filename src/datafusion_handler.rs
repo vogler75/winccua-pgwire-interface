@@ -553,6 +553,20 @@ fn handle_duplicate_column_names(sql: &str) -> String {
     }
 }
 
+/// Extract the base column name from an expression (e.g., "oid" from "o.oid")
+fn get_base_column_name(expr: &datafusion::sql::sqlparser::ast::Expr) -> String {
+    use datafusion::sql::sqlparser::ast::Expr;
+    
+    match expr {
+        Expr::Identifier(ident) => ident.value.clone(),
+        Expr::CompoundIdentifier(parts) => {
+            // For compound identifiers like "o.oid", return the last part
+            parts.last().map(|p| p.value.clone()).unwrap_or_else(|| expr.to_string())
+        }
+        _ => expr.to_string(),
+    }
+}
+
 /// Add aliases to duplicate column names in a query
 fn add_column_aliases_to_query(query: &datafusion::sql::sqlparser::ast::Query) -> Option<datafusion::sql::sqlparser::ast::Query> {
     use datafusion::sql::sqlparser::ast::{SetExpr, SelectItem};
@@ -567,13 +581,14 @@ fn add_column_aliases_to_query(query: &datafusion::sql::sqlparser::ast::Query) -
             for item in &select.projection {
                 match item {
                     SelectItem::UnnamedExpr(expr) => {
-                        let column_name = expr.to_string();
-                        let count = column_counts.entry(column_name.clone()).or_insert(0);
+                        // Get the base column name for tracking duplicates
+                        let base_name = get_base_column_name(expr);
+                        let count = column_counts.entry(base_name.clone()).or_insert(0);
                         *count += 1;
                         
                         if *count > 1 {
                             // Create alias for duplicate column
-                            let alias_name = format!("{}_{}", column_name, count);
+                            let alias_name = format!("{}_{}", base_name, count);
                             let alias = datafusion::sql::sqlparser::ast::Ident::new(alias_name);
                             modified_projection.push(SelectItem::ExprWithAlias {
                                 expr: expr.clone(),
