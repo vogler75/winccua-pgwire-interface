@@ -10,7 +10,8 @@ A PostgreSQL wire protocol server that acts as a proxy to a WinCC Unified GraphQ
   - `LoggedTagValues` - Historical tag data with timestamp filtering
   - `ActiveAlarms` - Current active alarms  
   - `LoggedAlarms` - Historical alarm data
-  - `TagList` - List of available tags (uses GraphQL browse query)
+  - `TagList` - List of available tags (uses GraphQL browse query)  
+  - `pg_stat_activity` - PostgreSQL-compatible connection and query statistics
 - **SQL Support**: SELECT queries with WHERE clauses, filtering, and LIKE patterns with wildcards
 - **GraphQL Integration**: Translates SQL queries to GraphQL calls
 
@@ -250,6 +251,29 @@ CREATE TABLE taglist (
 );
 ```
 
+### pg_stat_activity
+```sql
+CREATE TABLE pg_stat_activity (
+    datid INTEGER,              -- Database OID (always 0)
+    datname TEXT,               -- Database name
+    pid INTEGER,                -- Process ID (connection ID)
+    usename TEXT,               -- Username
+    application_name TEXT,      -- Client application name
+    client_addr TEXT,           -- Client IP address
+    client_hostname TEXT,       -- Client hostname (NULL)
+    client_port INTEGER,        -- Client port number
+    backend_start TIMESTAMP,    -- Connection start time
+    query_start TIMESTAMP,      -- Query start time
+    query_stop TIMESTAMP,       -- Query completion time
+    state TEXT,                 -- Connection state
+    query TEXT,                 -- Current/last query
+    graphql_time BIGINT,        -- GraphQL execution time in ms
+    datafusion_time BIGINT,     -- DataFusion execution time in ms
+    overall_time BIGINT,        -- Overall query execution time in ms
+    last_alive_sent TIMESTAMP   -- Last keep-alive sent time
+);
+```
+
 ## Advanced SQL Queries with DataFusion
 
 This server leverages **Apache DataFusion** as an in-memory query engine to provide powerful SQL capabilities on top of the data fetched from the GraphQL API. This allows for complex queries, including aggregations, `GROUP BY`, `ORDER BY`, and advanced filtering directly on the live industrial data.
@@ -313,6 +337,24 @@ SELECT * FROM taglist;
 
 -- Filter tags by pattern
 SELECT * FROM taglist WHERE tag_name LIKE '%::HMI_%';
+
+-- Monitor active connections and query performance
+SELECT pid, usename, client_addr, state, overall_time, query 
+FROM pg_stat_activity 
+WHERE state = 'active';
+
+-- Find slow queries (over 1000ms)
+SELECT pid, usename, overall_time, graphql_time, datafusion_time, query 
+FROM pg_stat_activity 
+WHERE overall_time > 1000 
+ORDER BY overall_time DESC;
+
+-- Check connection statistics
+SELECT usename, COUNT(*) as connection_count, 
+       AVG(overall_time) as avg_query_time,
+       MAX(overall_time) as max_query_time
+FROM pg_stat_activity 
+GROUP BY usename;
 ```
 
 ## LIKE Pattern Support
